@@ -36,10 +36,10 @@ pip3 install aiohttp blake3 cbor2 cryptography pyngrok 2>&1 | grep -v "already s
 echo
 echo "  ✅ Installazione completata!"
 echo
-echo "  Per connetterti al server (uscenza):"
-echo "    cd $ATP_DIR/ATP/sdk/examples"
-echo "    python3 teacher_client.py"
+echo "  Per connetterti al server della scuola:"
+echo "    cd \$ATP_DIR/ATP/sdk/examples"
+echo "    python3 teacher_client.py atp_key_scuola_futura.card"
 echo
-echo "  Per connetterti a un server remoto (opzionale):"
-echo "    python3 teacher_client.py 192.168.1.100"
+echo "  Il file .card te lo dà la scuola (USB, email, QR, WhatsApp)."
+echo "  Nessuna configurazione di rete necessaria."
 echo

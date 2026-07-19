@@ -29,7 +29,6 @@ setup(
         "cryptography>=41.0",
     ],
     extras_require={
-        "tunnel": ["pyngrok>=7.0", "miniupnpc>=2.0"],  # zero-config tunnel
         "dashboard": ["PySide6>=6.5", "matplotlib>=3.7"],
         "all": [
             "aiohttp>=3.8",
@@ -38,8 +37,6 @@ setup(
             "cryptography>=41.0",
             "PySide6>=6.5",
             "matplotlib>=3.7",
-            "pyngrok>=7.0",
-            "miniupnpc>=2.0",
         ],
     },
     classifiers=[

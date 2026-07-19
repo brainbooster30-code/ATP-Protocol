@@ -118,16 +118,21 @@ async def interactive_menu(client: SimpleATPClient):
 
 
 async def main():
-    # Parse CLI argument for school host (accepts "host" or "host:port")
-    raw = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_SCHOOL_HOST
-    if ":" in raw:
+    # Determina host:port o .card file
+    raw = sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1:8443"
+    
+    # Se è un file .card, importa la Key Card
+    if raw.endswith(".card") and os.path.isfile(raw):
+        from atp_sdk.key_exchange import import_key_card
+        peer = import_key_card(raw)
+        host, port = peer["host"], peer["port"]
+        print(f"  🗝️  Key Card importata: {peer['agent_name']}")
+        print(f"     Indirizzo: {host}:{port}")
+    elif ":" in raw:
         parts = raw.rsplit(":", 1)
-        host = parts[0]
-        try: port = int(parts[1])
-        except ValueError: port = SCHOOL_PORT
+        host, port = parts[0], int(parts[1])
     else:
-        host = raw
-        port = SCHOOL_PORT
+        host, port = raw, SCHOOL_PORT
 
     print(f"  🏠  ATP Teacher Client — {TEACHER_NAME}")
     print(f"  Connessione a: {host}:{port}")

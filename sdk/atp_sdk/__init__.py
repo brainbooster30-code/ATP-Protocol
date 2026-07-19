@@ -31,8 +31,14 @@ if _PARENT not in sys.path:
     sys.path.insert(0, _PARENT)
 
 # ── Public API ─────────────────────────────────────────────────────────────────
-from atp_sdk.client import SimpleATPClient
-from atp_sdk.server import SimpleATPServer
+from .client import SimpleATPClient
+from .server import SimpleATPServer
+from .key_exchange import export_key_card, import_key_card, connect_with_key_card
+
+try:
+    from .tunnel import AutoTunnel
+except ImportError:
+    AutoTunnel = None
 
 __all__ = [
     "SimpleATPClient",

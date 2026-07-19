@@ -34,7 +34,7 @@ if exist "ATP" (
 
 echo.
 echo   📦 Installazione dipendenze...
-pip install aiohttp blake3 cbor2 cryptography miniupnpc 2>&1 | findstr /V "already satisfied"
+pip install aiohttp blake3 cbor2 cryptography 2>&1 | findstr /V "already satisfied"
 
 echo.
 echo   ✅ Installazione completata!

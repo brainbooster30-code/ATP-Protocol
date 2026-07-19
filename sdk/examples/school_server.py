@@ -162,15 +162,28 @@ async def main():
     await server.start(host=HOST, port=PORT)
     logger.info("Server running. Press Ctrl+C to stop.")
 
-    # Start internet tunnel (zero-config: UPnP → ngrok → locale)
-    tunnel = AutoTunnel()
-    pub_url = await tunnel.start(PORT)
-    if pub_url != f"127.0.0.1:{PORT}":
-        method = tunnel.method.upper()
-        print(f"\n  🌐 TUNNEL INTERNET ATTIVO ({method})")
-        print(f"  Indirizzo pubblico: {pub_url}")
-        print(f"  Client: python teacher_client.py {pub_url}")
-        print()
+    # Esporta Key Card per scambio fuori banda (zero servizi esterni)
+    from atp_sdk.key_exchange import export_key_card
+    from socket import gethostbyname, gethostname
+    
+    local_ip = gethostbyname(gethostname())
+    card_file = export_key_card(
+        agent_name=SCHOOL_NAME,
+        ed25519_sk=bytes.fromhex("00" * 32),  # placeholder, identità reale
+        ed25519_pk=bytes.fromhex("00" * 32),
+        host=local_ip,
+        port=PORT,
+        mcc_hash=server.peer_mcc_hash or "",
+    )
+    print()
+    print(f"  🗝️  KEY CARD ESPORTATA: {card_file}")
+    print()
+    print(f"  Per connetterti, consegna questo file all'insegnante "
+          f"(USB, email, QR code, WhatsApp...):")
+    print(f"    1. Invia il file: {card_file}")
+    print(f"    2. L'insegnante esegue:")
+    print(f"       python teacher_client.py {card_file}")
+    print()
 
     # Keep running until interrupted
     stop_event = asyncio.Event()

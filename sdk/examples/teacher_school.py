@@ -127,12 +127,24 @@ async def main():
     await school.start(port=PORT)
     print("[🏫 SCUOLA] Server Futura online")
     
-    # Avvia tunnel internet zero-config (UPnP → ngrok → locale)
-    from atp_sdk.tunnel import AutoTunnel
-    tunnel = AutoTunnel()
-    pub_url = await tunnel.start(PORT)
-    if "127.0.0.1" not in pub_url:
-        print(f"  🌐 TUNNEL INTERNET ({tunnel.method.upper()}): {pub_url}")
+    # Esporta Key Card per scambio fuori banda
+    from atp_sdk.key_exchange import export_key_card, import_key_card
+    from socket import gethostbyname, gethostname
+    local_ip = gethostbyname(gethostname())
+    card_file = export_key_card(
+        agent_name="scuola-futura",
+        ed25519_sk=bytes.fromhex("00" * 32),
+        ed25519_pk=bytes.fromhex("00" * 32),
+        host=local_ip, port=PORT,
+        mcc_hash="",
+    )
+    print(f"  🗝️  Key Card scuola: {card_file}")
+    
+    # Importa Key Card del docente (se esiste)
+    teacher_card = f"atp_key_prof_rossi.card"
+    if os.path.isfile(teacher_card):
+        peer = import_key_card(teacher_card)
+        print(f"  🗝️  Key Card docente importata: {peer['agent_name']}")
     print()
 
     teacher = SimpleATPClient("prof-rossi")

@@ -31,7 +31,7 @@ fi
 
 echo
 echo "  📦 Installazione dipendenze..."
-pip3 install aiohttp blake3 cbor2 cryptography miniupnpc 2>&1 | grep -v "already satisfied" || true
+pip3 install aiohttp blake3 cbor2 cryptography 2>&1 | grep -v "already satisfied" || true
 
 echo
 echo "  ✅ Installazione completata!"

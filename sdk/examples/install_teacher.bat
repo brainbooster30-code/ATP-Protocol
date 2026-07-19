@@ -39,11 +39,11 @@ pip install aiohttp blake3 cbor2 cryptography pyngrok 2>&1 | findstr /V "already
 echo.
 echo   ✅ Installazione completata!
 echo.
-echo   Per connetterti al server:
+echo   Per connetterti al server della scuola:
 echo     cd %ATP_DIR%\ATP\sdk\examples
-echo     python teacher_client.py
+echo     python teacher_client.py atp_key_scuola_futura.card
 echo.
-echo   Il client si connette via internet automaticamente.
+echo   Il file .card te lo dà la scuola (USB, email, QR, WhatsApp).
 echo   Nessuna configurazione di rete necessaria.
 echo.
 pause
