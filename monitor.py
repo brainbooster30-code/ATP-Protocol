@@ -84,7 +84,8 @@ class Monitor:
         self._tasks_completed = 0
         self._tasks_failed = 0
         self._errors_by_type: dict[str, int] = {}
-        self._latencies: list[float] = []
+        self._avg_latency_ms: float = 0.0  # exponential moving average
+        self._latency_count: int = 0
         self._connections: dict[str, dict] = {}  # conn_id -> state
         self._rate_limit_hits = 0
         self._ban_count = 0
@@ -137,11 +138,6 @@ class Monitor:
 
     def get_metrics(self) -> dict:
         with self._lock:
-            avg_lat = (
-                sum(self._latencies) / len(self._latencies)
-                if self._latencies
-                else 0.0
-            )
             return {
                 "tasks_sent": self._tasks_sent,
                 "tasks_received": self._tasks_received,
@@ -149,7 +145,7 @@ class Monitor:
                 "tasks_failed": self._tasks_failed,
                 "errors_count": sum(self._errors_by_type.values()),
                 "errors_by_type": dict(self._errors_by_type),
-                "avg_latency_ms": round(avg_lat, 2),
+                "avg_latency_ms": round(self._avg_latency_ms, 2),
                 "active_connections": sum(
                     1 for c in self._connections.values()
                     if c.get("state") == "BOUND"
@@ -176,7 +172,13 @@ class Monitor:
             self._tasks_received += 1
             self._tasks_completed += 1
             if "latency_ms" in d:
-                self._latencies.append(d["latency_ms"])
+                lat = d["latency_ms"]
+                self._latency_count += 1
+                alpha = 0.1  # EMA smoothing factor
+                if self._latency_count == 1:
+                    self._avg_latency_ms = float(lat)
+                else:
+                    self._avg_latency_ms = alpha * lat + (1 - alpha) * self._avg_latency_ms
         elif et == TASK_ERROR:
             self._tasks_received += 1
             self._tasks_failed += 1

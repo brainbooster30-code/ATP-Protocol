@@ -70,6 +70,7 @@ class SimpleATPServer:
         self._running: bool = False
         self._cert_path: str = ""
         self._key_path: str = ""
+        self.verify_tls: bool = False  # set True for production with real certs
 
         # Custom task handlers: task_type → handler
         self._handlers: dict[str, TaskHandler] = {}

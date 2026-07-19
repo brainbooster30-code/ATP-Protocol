@@ -60,3 +60,48 @@ def get_deepseek_api_key() -> str:
 
 # ── Event ring-buffer ─────────────────────────────────────────────────────────
 MONITOR_EVENT_LIMIT = 1000
+
+# ── Rate Limiter / Anti-Replay ─────────────────────────────────────────────────
+import threading, time, collections
+
+class RateLimiter:
+    """Sliding window rate limiter per connection (O(1) average)."""
+    def __init__(self, max_rps: int = RATE_LIMIT_RPS):
+        self.max_rps = max_rps
+        self._lock = threading.Lock()
+        self._timestamps: collections.deque = collections.deque(maxlen=max_rps + 10)
+
+    def allow(self) -> bool:
+        with self._lock:
+            now = time.time()
+            while self._timestamps and self._timestamps[0] < now - 1.0:
+                self._timestamps.popleft()
+            if len(self._timestamps) >= self.max_rps:
+                return False
+            self._timestamps.append(now)
+            return True
+
+class AntiReplay:
+    """Anti-replay filter for frame_id (16 bytes, sliding window TTL)."""
+    def __init__(self, window_ms: int = ANTI_REPLAY_TTL_MS, max_ids: int = 10000):
+        self.window_ms = window_ms
+        self._max_ids = max_ids
+        self._lock = threading.Lock()
+        self._seen: dict[bytes, float] = {}
+
+    def is_new(self, frame_id: bytes, now_ms: float) -> bool:
+        if len(frame_id) != 16:
+            return False
+        with self._lock:
+            cutoff = now_ms - self.window_ms
+            expired = [k for k, v in self._seen.items() if v < cutoff]
+            for k in expired:
+                del self._seen[k]
+            if frame_id in self._seen:
+                return False
+            if len(self._seen) >= self._max_ids:
+                # evict oldest
+                oldest = min(self._seen, key=self._seen.get)
+                del self._seen[oldest]
+            self._seen[frame_id] = now_ms
+            return True

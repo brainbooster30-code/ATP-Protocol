@@ -81,6 +81,10 @@ class ATPServer:
     async def _on_connect(self, reader: asyncio.StreamReader,
                           writer: asyncio.StreamWriter):
         """Handle one incoming connection."""
+        from config import RateLimiter, AntiReplay
+        rate_limiter = RateLimiter()
+        anti_replay = AntiReplay()
+
         agent = ATPAgent(
             identity=self.identity,
             is_server=True,

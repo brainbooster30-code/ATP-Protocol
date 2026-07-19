@@ -897,11 +897,26 @@ class ATPAgent:
         await send_frame(self._writer, payload)
 
     async def _read_frame(self) -> Optional[dict]:
-        """Read a frame and log the event."""
-        frame = await decode_frame(self._reader)
+        """Read a frame and log the event. Applies clock skew check."""
+        try:
+            frame = await decode_frame(self._reader)
+        except Exception:
+            return None
+
         if frame is None:
             return None
-        ft = frame.get("header", {}).get("frame_type")
+
+        # Clock skew check (server side only)
+        header = frame.get("header", {})
+        ts = header.get("timestamp", 0)
+        if ts and self.is_server:
+            from config import CLOCK_SKEW_MS
+            now_ms = int(time.time() * 1000)
+            if abs(now_ms - ts) > CLOCK_SKEW_MS:
+                logger.warning("Clock skew: %d ms (limit %d)", abs(now_ms - ts), CLOCK_SKEW_MS)
+                return None
+
+        ft = header.get("frame_type")
         if self.monitor:
             self.monitor.add_event(FRAME_RECEIVED, {
                 "conn_id": self._conn_id,

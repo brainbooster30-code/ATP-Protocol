@@ -57,6 +57,7 @@ class SimpleATPClient:
         self._host: str = ""
         self._port: int = 0
         self.demo_mode: bool = True  # skip root store check for demo/deploy
+        self.verify_tls: bool = False  # set True for production with real certs
 
     # ── Connection lifecycle ──────────────────────────────────────────────
 
@@ -93,10 +94,16 @@ class SimpleATPClient:
         # Create identity (generates fresh X25519 + Ed25519 keypairs)
         self._identity = AgentIdentity(agent_name=self.agent_name)
 
-        # Build SSL context — accept any self-signed cert (demo mode)
+        # Build SSL context
         ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
+        if self.verify_tls:
+            ssl_ctx.check_hostname = True
+            ssl_ctx.verify_mode = ssl.CERT_REQUIRED
+            # Load default CA certs for production
+            ssl_ctx.load_default_certs()
+        else:
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
 
         try:
             self._reader, self._writer = await asyncio.wait_for(
