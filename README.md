@@ -147,14 +147,29 @@ Vedi `sdk/examples/teacher_school.py` — 5 use case reali con tunnel internet z
           │  └──────────────────────────────────┘  │
 ```
 
----
-
 ## Quick Start
 
+### 1. Installa l'SDK
+
 ```bash
-cd ATP/sdk
-pip install -e .
+# Dalla directory principale del progetto ATP
+cd sdk
+pip install -e .                    # installazione base
+pip install -e ".[all]"             # tutto (dashboard, tunnel)
+pip install -e ".[tunnel]"          # solo tunnel internet (ngrok)
 ```
+
+L'SDK installa automaticamente tutte le dipendenze necessarie:
+`aiohttp`, `blake3`, `cbor2`, `cryptography`.
+
+Se vuoi il tunnel internet zero-config (ngrok):
+```bash
+pip install pyngrok
+setx NGROK_AUTH_TOKEN "tuo_token"   # Windows
+# export NGROK_AUTH_TOKEN=tuo_token # Linux/macOS
+```
+
+### 2. Usa l'SDK
 
 ```python
 from atp_sdk import SimpleATPClient, SimpleATPServer
@@ -170,15 +185,40 @@ response = await client.chat("Quali sono i vantaggi di ATP?")
 print(response)
 ```
 
-Tutti gli esempi in `sdk/examples/`:
+### 3. Esegui gli esempi
+
+Tutti gli esempi sono in `sdk/examples/`:
+
+```bash
+cd sdk/examples
+
+# Due sedi aziendali che condividono AI via ATP (DeepSeek reale)
+python azienda.py both
+
+# Insegnante ↔ Scuola (3 agenti: research → factcheck → summarize)
+python research_assistant.py
+
+# Code review pipeline (3 agenti: dev → review → fix)
+python code_review_pipeline.py
+
+# Governance distribuita (4 agenti votano con attestazione MCC)
+python agent_voting.py
+
+# Server scolastico standalone + client interattivo
+python school_server.py            # terminale 1: avvia server
+python teacher_client.py           # terminale 2: menu interattivo
+
+# Connessione via internet (tunnel auto)
+python teacher_client.py 2.tcp.ngrok.io:12345
+```
 
 | Esempio | Agenti | Scenario |
 |---------|--------|----------|
 | `azienda.py` | 2 | Due sedi condividono AI via ATP (DeepSeek reale) |
-| `teacher_school.py` | 2 | Insegnante ↔ scuola via internet |
 | `research_assistant.py` | 3 | Researcher → FactChecker → Summarizer |
 | `code_review_pipeline.py` | 3 | Developer → Reviewer → Fixer |
 | `agent_voting.py` | 4 | Governance distribuita con attestazione MCC |
+| `teacher_school.py` | 2 | Insegnante ↔ scuola via internet |
 | `school_server.py` | 1 | Server scolastico con tunnel internet |
 | `teacher_client.py` | 1 | Client insegnante con menu interattivo |
 
