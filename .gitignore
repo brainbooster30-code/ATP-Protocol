@@ -1,0 +1,23 @@
+# ATP
+logs/
+__pycache__/
+*.pyc
+*.pem
+graphify-src/
+graphify-out/
+.obsidian/
+obsidian-vault/
+_sdk_server_cert.pem
+_sdk_server_key.pem
+test_all.py
+vault_docs.py
+_debug_all.py
+send_10_tasks.py
+# Keep only essential docs
+*.md
+!README.md
+!sdk/DOCS.md
+!sdk/API.md
+!sdk/DEPLOY.md
+!sdk/README.md
+!docs/

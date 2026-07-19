@@ -1,0 +1,6 @@
+blake3>=0.3.0
+cbor2>=5.4.0
+cryptography>=39.0.0
+aiohttp>=3.8.0
+PySide6>=6.5.0
+matplotlib>=3.7.0
