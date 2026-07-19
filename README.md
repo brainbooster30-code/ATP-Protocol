@@ -269,6 +269,24 @@ python teacher_client.py 2.tcp.ngrok.io:12345
 
 ---
 
+## Integrazione con Hermes Agent
+
+ATP è disponibile come skill per **Hermes Agent** (by Nous Research).
+Per attivarla in una sessione Hermes:
+
+```bash
+# Carica la skill utente (raccomandato — esempi, SDK, tunnel)
+skill_view(name='atp-protocol-skill')
+
+# Oppure la skill tecnica (specifica protocollo, pitfall)
+skill_view(name='atp-protocol')
+```
+
+Le skill includono: installazione SDK, quick start, pattern di cooperazione
+multi-agente, tunnel internet zero-config e API reference completa.
+
+---
+
 ## Progetti correlati
 
 - **SDK Python** — `pip install -e .[all]` in `sdk/` — SimpleATPClient, SimpleATPServer, Tunnel
