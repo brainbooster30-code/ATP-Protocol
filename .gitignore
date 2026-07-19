@@ -13,11 +13,11 @@ test_all.py
 vault_docs.py
 _debug_all.py
 send_10_tasks.py
-# Keep only essential docs
+# Exclude all .md except specific ones
 *.md
 !README.md
 !sdk/DOCS.md
 !sdk/API.md
 !sdk/DEPLOY.md
 !sdk/README.md
-!docs/
+!docs/*.md
