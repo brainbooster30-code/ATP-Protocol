@@ -74,7 +74,7 @@ class Monitor:
     def __init__(self, max_events: int = MONITOR_EVENT_LIMIT):
         self._max_events = max_events
         self._events: deque[dict] = deque(maxlen=max_events)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._observers: list[Callable[[dict], None]] = []
         self._qt_signals = MonitorSignals()  # always created on the main thread
 

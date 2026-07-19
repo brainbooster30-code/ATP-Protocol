@@ -120,12 +120,18 @@ ATP v1.7 è un'implementazione funzionante con:
 
 ## 6. Lavori futuri
 
-- [ ] Gerarchia di CA multi-livello (Livello 4)
+- [x] Rate limiting implementato (sliding window, 100 RPS)
+- [x] Anti-replay implementato (bloom filter, 20s window)
+- [x] Clock skew verificato in ricezione frame
+- [x] Keepalive PING/PONG (30s)
+- [x] Shutdown ACK graceful
+- [x] Task cancel (TASK_CANCEL 0x05)
+- [x] verify_tls option per produzione
+- [ ] Multiplexing task stream (stream ID multipli)
 - [ ] Crittografia end-to-end con X25519 ECDH
-- [ ] Task multiplexing su singola connessione
 - [ ] Namespace distribuiti per agenti
 - [ ] Federazione tra istanze ATP diverse
-- [ ] Gateway per bridge con protocolli esterni (HTTP, MQTT, Matrix)
+- [ ] Gateway per bridge con protocolli esterni
 
 ---
 

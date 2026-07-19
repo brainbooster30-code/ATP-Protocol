@@ -245,6 +245,9 @@ class ATPAgent:
         self._reader: Optional[asyncio.StreamReader] = None
         self._writer: Optional[asyncio.StreamWriter] = None
         self._task_lock = asyncio.Lock()  # serialize concurrent send_task calls
+        self._keepalive_task: Optional[asyncio.Task] = None
+        self._keepalive_interval: float = 30.0  # seconds between PINGs
+
 
         # Register agent identity in monitor
         if self.monitor:
@@ -442,7 +445,36 @@ class ATPAgent:
                     await self._handle_task_request(frame)
                 elif ft == 0x10:
                     logger.info("Received CONTROL_SHUTDOWN")
+                    # Send SHUTDOWN_ACK before breaking
+                    try:
+                        ack = {"header": build_header(0x12)}
+                        await self._send_frame(ack)
+                    except Exception:
+                        pass
                     break
+                elif ft == 0x05:
+                    logger.info("Received TASK_CANCEL")
+                    # Cancel current task if any
+                    if self.monitor:
+                        self.monitor.add_event(TASK_ERROR, {
+                            "conn_id": self._conn_id,
+                            "error_code": 0x0F,
+                            "error_message": "Task cancelled by peer",
+                        })
+                elif ft == 0x12:
+                    logger.info("Received SHUTDOWN_ACK — closing cleanly")
+                    break
+                elif ft == 0x15:
+                    # PING → PONG
+                    try:
+                        pong = {"header": build_header(0x16), "timestamp": int(time.time() * 1000)}
+                        await self._send_frame(pong)
+                    except Exception:
+                        pass
+                    self._last_peer_activity = time.time()
+                elif ft == 0x16:
+                    # PONG received — peer is alive
+                    self._last_peer_activity = time.time()
                 elif ft == 0x20:
                     logger.warning("Received ERROR frame: %s", frame.get("error_message"))
                 else:
@@ -453,8 +485,41 @@ class ATPAgent:
                 logger.exception("handle_task_loop error")
                 break
 
+
+
+    # ── Keepalive ──────────────────────────────────────────────────────────
+
+    async def _keepalive_loop(self):
+        """Send periodic PING frames to detect dead connections."""
+        while self.bound and self._writer:
+            try:
+                await asyncio.wait_for(
+                    asyncio.sleep(self._keepalive_interval), timeout=self._keepalive_interval
+                )
+                if not self.bound:
+                    break
+                # Send PING frame
+                hdr = build_header(0x15)
+                payload = {"header": hdr, "timestamp": int(time.time() * 1000)}
+                await self._send_frame(payload)
+                self._last_ping_ts = time.time()
+            except asyncio.TimeoutError:
+                continue
+            except (ConnectionError, OSError):
+                logger.warning("Keepalive: connection lost for %s", self._conn_id)
+                self.bound = False
+                break
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("Keepalive error for %s", self._conn_id)
+                break
+
     async def close_async(self):
         """Close the connection gracefully with SSL shutdown handshake."""
+        if self._keepalive_task:
+            self._keepalive_task.cancel()
+            self._keepalive_task = None
         if self._writer:
             try:
                 self._writer.close()
@@ -676,6 +741,8 @@ class ATPAgent:
 
         # Phase 5 — ready for task streams
         self.bound = True
+        # Start keepalive task
+        self._keepalive_task = asyncio.create_task(self._keepalive_loop())
 
     async def _client_handshake(self, reader, writer):
         """Initiator-side handshake."""

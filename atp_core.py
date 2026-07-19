@@ -338,8 +338,14 @@ FRAME_TYPES: dict[int, str] = {
     0x02: "TASK_RESPONSE",
     0x03: "TASK_ACK",
     0x04: "TASK_ERROR",
+    0x05: "TASK_CANCEL",
     0x10: "CONTROL_SHUTDOWN",
     0x11: "CONTROL_REVOKE_NOTIFY",
+    0x12: "CONTROL_SHUTDOWN_ACK",
+    0x13: "CONTROL_HEALTH",
+    0x14: "CONTROL_HEALTH_RESP",
+    0x15: "CONTROL_PING",
+    0x16: "CONTROL_PONG",
     0x20: "ERROR",
     0x21: "ROOT_STORE_UPDATE",
     0x30: "VERSION_PROPOSE",
@@ -365,6 +371,7 @@ ERROR_CODES: dict[int, tuple[str, str]] = {
     0x0C: ("ERR_CLOCK_SKEW", "close_stream"),
     0x0D: ("ERR_RATE_LIMITED", "recoverable"),
     0x0E: ("ERR_STREAM_VIOLATION_MINOR", "close_stream"),
+    0x0F: ("ERR_TASK_CANCELLED", "close_stream"),
 }
 
 

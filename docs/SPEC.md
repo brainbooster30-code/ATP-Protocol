@@ -147,8 +147,14 @@ header = {
 | 0x02 | TASK_RESPONSE | Risposta a task | Task |
 | 0x03 | TASK_ACK | Conferma ricezione task | Task |
 | 0x04 | TASK_ERROR | Errore task | Task |
+| 0x05 | TASK_CANCEL | Cancellazione task | Task |
 | 0x10 | CONTROL_SHUTDOWN | Shutdown graceful | Control |
 | 0x11 | CONTROL_REVOKE_NOTIFY | Notifica revoca | Control |
+| 0x12 | CONTROL_SHUTDOWN_ACK | Ack shutdown | Control |
+| 0x13 | CONTROL_HEALTH | Richiesta health | Control |
+| 0x14 | CONTROL_HEALTH_RESP | Risposta health | Control |
+| 0x15 | CONTROL_PING | Keepalive ping | Control |
+| 0x16 | CONTROL_PONG | Keepalive pong | Control |
 | 0x20 | ERROR | Errore di protocollo | Error |
 | 0x21 | ROOT_STORE_UPDATE | Aggiornamento RootStore | Control |
 | 0x30 | VERSION_PROPOSE | Proposta versione | Handshake (P2) |
@@ -266,7 +272,7 @@ CAPABILITY_EXCHANGE (0x50):
 
 ---
 
-## 4. Error Codes (14)
+## 4. Error Codes (15)
 
 | Codice | Nome | Disposizione | Descrizione |
 |--------|------|-------------|-------------|
@@ -284,6 +290,7 @@ CAPABILITY_EXCHANGE (0x50):
 | 0x0C | ERR_CLOCK_SKEW | close_stream | Differenza clock eccessiva |
 | 0x0D | ERR_RATE_LIMITED | recoverable | Rate limit superato |
 | 0x0E | ERR_STREAM_VIOLATION_MINOR | close_stream | Violazione minore dello stream |
+| 0x0F | ERR_TASK_CANCELLED | close_stream | Task cancellato dal peer |
 
 **Disposizioni:**
 - `close`: chiude la connessione immediatamente
@@ -292,7 +299,21 @@ CAPABILITY_EXCHANGE (0x50):
 
 ---
 
-## 5. Handshake (5 Fasi)
+## 5. Keepalive (PING/PONG)
+
+| Codice | Nome | Descrizione |
+|--------|------|-------------|
+| 0x15 | CONTROL_PING | Richiesta keepalive (inviata ogni 30s dal server) |
+| 0x16 | CONTROL_PONG | Risposta keepalive (inviata automaticamente dal receiver) |
+
+Il server avvia un task keepalive dopo l'handshake. Se la connessione
+TCP cade silenziosamente, il PING timeout lo rileva entro 30 secondi.
+
+PONG ricevuto → aggiorna `_last_peer_activity`.
+
+---
+
+## 6. Handshake (5 Fasi)
 
 ### 5.1 Fase 1: TLS
 
