@@ -1,4 +1,4 @@
-# ATP v1.6.1 — RFC: Agent Transport Protocol
+# ATP v1.7 — RFC: Agent Transport Protocol
 
 **Category:** Experimental
 **RFC No:** ATP-RFC-001  
@@ -11,7 +11,7 @@
 
 ## 1. Introduction
 
-This document specifies the Agent Transport Protocol (ATP) version 1.6.1,
+This document specifies the Agent Transport Protocol (ATP) version 1.7,
 a peer-to-peer cryptographic protocol for secure communication between
 autonomous software agents. ATP provides identity, authentication, proof
 of origin, and task dispatch without a central server.

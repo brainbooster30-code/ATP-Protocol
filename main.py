@@ -1,5 +1,5 @@
 """
-ATP v1.6.1 — Application entry point.
+ATP v1.7 — Application entry point.
 Launches the PySide6 dashboard with the ATP backend.
 """
 
@@ -43,11 +43,11 @@ def setup_logging():
 def main():
     logger = setup_logging()
     logger.info("=" * 60)
-    logger.info("ATP v1.6.1 Dashboard starting...")
+    logger.info("ATP v1.7 Dashboard starting...")
     logger.info("=" * 60)
 
     app = QApplication(sys.argv)
-    app.setApplicationName("ATP v1.6.1 Dashboard")
+    app.setApplicationName("ATP v1.7 Dashboard")
     app.setOrganizationName("ATP Project")
 
     # Global monitor (shared across all components)

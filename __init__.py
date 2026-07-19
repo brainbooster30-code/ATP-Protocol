@@ -1,1 +1,1 @@
-"""ATP v1.6.1 — Agent Transport Protocol implementation."""
+"""ATP v1.7 — Agent Transport Protocol implementation."""

@@ -1,4 +1,4 @@
-# ATP SDK v1.6.1 — API Reference
+# ATP SDK v1.7 — API Reference
 
 ---
 
@@ -15,7 +15,7 @@ Espone le classi pubbliche `SimpleATPClient` e `SimpleATPServer`.
 |------|------|-------------|
 | `SimpleATPClient` | `class` | Client ATP asincrono — connect, chat, send, echo, close |
 | `SimpleATPServer` | `class` | Server ATP asincrono — start, stop, on_task, register_handler |
-| `__version__` | `str` | `"1.6.1"` |
+| `__version__` | `str` | `"1.7"` |
 
 ---
 

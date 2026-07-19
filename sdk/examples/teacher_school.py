@@ -4,7 +4,7 @@ ATP SDK — Real-World Example #4: Teacher ↔ School Server over Internet
 Scenario:
   An Italian teacher (Prof. Rossi) works from home and needs to interact
   with the school's AI server (Scuola Futura) via internet.
-  ATP v1.6.1 provides secure, attested communication with MCC-bound identities.
+  ATP v1.7 provides secure, attested communication with MCC-bound identities.
 
   Use cases: lesson plan approval, grade lookup, homework assignment,
              resource requests, incident reporting.
@@ -111,7 +111,7 @@ async def handle_report_incident(task_type: str, payload: str) -> str:
 
 async def main():
     print("═" * 64)
-    print("  🏠  Prof. Rossi (casa)  ←──ATP v1.6.1──→  🏫  Scuola Futura")
+    print("  🏠  Prof. Rossi (casa)  ←──ATP v1.7──→  🏫  Scuola Futura")
     print("═" * 64)
     print()
 
@@ -192,7 +192,7 @@ async def main():
     print(f"  Compiti:          {len(DB['homework'])}")
     print(f"  Segnalazioni:     {len(DB['incidents'])}")
     print(f"  Agenti:           Prof. Rossi ↔ Scuola Futura")
-    print(f"  Protocollo:       ATP v1.6.1 — MCC-attested")
+    print(f"  Protocollo:       ATP v1.7 — MCC-attested")
     print(f"  ✅ 5/5 use case completati via internet")
     print("═" * 64)
 

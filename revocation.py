@@ -1,5 +1,5 @@
 """
-ATP v1.6.1 — Revocation subsystem.
+ATP v1.7 — Revocation subsystem.
 Real Cuckoo Filter + Gossip protocol + Root Store Chain + Degradation Policy.
 """
 

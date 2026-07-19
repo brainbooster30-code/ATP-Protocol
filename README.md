@@ -1,4 +1,4 @@
-# ATP v1.6.1 — Agent Transport Protocol
+# ATP v1.7 — Agent Transport Protocol
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)

@@ -1,8 +1,8 @@
-# ATP v1.6.1 — Draft Design Document
+# ATP v1.7 — Draft Design Document
 
 **Agent Transport Protocol — Un protocollo peer-to-peer per agenti autonomi**
 
-*Versione: 1.6.1 (Draft — 19 Luglio 2026)*
+*Versione: 1.7 (Draft — 19 Luglio 2026)*
 
 ---
 
@@ -108,7 +108,7 @@ standard per tre ragioni:
 
 ## 5. Stato attuale
 
-ATP v1.6.1 è un'implementazione funzionante con:
+ATP v1.7 è un'implementazione funzionante con:
 
 - **10 moduli Python** (atp_core, agent, server, client, config, authority,
   revocation, monitor, dashboard, main)

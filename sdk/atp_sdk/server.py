@@ -1,5 +1,5 @@
 """
-ATP SDK v1.6.1 — SimpleATPServer
+ATP SDK v1.7 — SimpleATPServer
 
 A clean, high-level server that wraps ATPServer and ATPAgent.
 Handles TLS, MCC creation, handshake, and task dispatch automatically.

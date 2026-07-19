@@ -1,5 +1,5 @@
 """
-ATP v1.6.1 — Agent: identity, handshake (5 phases), task lifecycle, DeepSeek.
+ATP v1.7 — Agent: identity, handshake (5 phases), task lifecycle, DeepSeek.
 """
 
 from __future__ import annotations
@@ -500,7 +500,7 @@ class ATPAgent:
                     "success": True,
                 })
             return (
-                f"[ATP v1.6.1 Mock Response] Richiesta ricevuta: \"{prompt[:100]}{'...' if len(prompt) > 100 else ''}\". "
+                f"[ATP v1.7 Mock Response] Richiesta ricevuta: \"{prompt[:100]}{'...' if len(prompt) > 100 else ''}\". "
                 f"Configura DEEPSEEK_API_KEY per risposte reali da DeepSeek."
             )
 

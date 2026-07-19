@@ -1,5 +1,5 @@
 """
-ATP v1.6.1 — Core module.
+ATP v1.7 — Core module.
 Cryptographic primitives, MCC (Merkle-Claim Card), and wire-format frames.
 """
 
@@ -207,7 +207,7 @@ class MCC:
         check_revoked: bool = False,
     ) -> bool:
         """
-        Full MCC verification per ATP v1.6.1 §Identity.
+        Full MCC verification per ATP v1.7 §Identity.
         Returns True if all checks pass, False otherwise.
 
         Steps:
@@ -280,7 +280,7 @@ def _build_merkle_tree(leaves: list[MCCLeaf]) -> bytes:
     """Build full Merkle tree. If N is not a power of 2, pad with last leaf.
     
     Leaves are sorted by key first to ensure deterministic root hash
-    regardless of insertion order (ATP v1.6.1 §2.2).
+    regardless of insertion order (ATP v1.7 §2.2).
     """
     if not leaves:
         return b"\x00" * 32

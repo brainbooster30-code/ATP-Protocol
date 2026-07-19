@@ -1,4 +1,4 @@
-# ATP SDK v1.6.1 — Documentation
+# ATP SDK v1.7 — Documentation
 
 Python SDK per il protocollo ATP (Agent Transport Protocol). Connette agenti AI
 in reti federate sicure in poche righe di codice.
@@ -389,7 +389,7 @@ Il client invoca: `await client.send("translate", "Hello world")`
 
 # Protocollo
 
-ATP v1.6.1 — Agent Transfer Protocol. Protocollo crittografico per comunicazione
+ATP v1.7 — Agent Transfer Protocol. Protocollo crittografico per comunicazione
 sicura e verificabile tra agenti AI.
 
 ### Fasi dell'handshake
@@ -414,7 +414,7 @@ sicura e verificabile tra agenti AI.
 La chiave viene risolta automaticamente:
 1. `os.environ["DEEPSEEK_API_KEY"]`
 2. Registry Windows `HKCU\Environment` (per git-bash/MSYS2)
-3. Se assente: risposta mock `[ATP v1.6.1 Mock Response]`
+3. Se assente: risposta mock `[ATP v1.7 Mock Response]`
 
 ### Demo mode
 

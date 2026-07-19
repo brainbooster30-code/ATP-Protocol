@@ -1,12 +1,12 @@
 """
-ATP v1.6.1 — Configuration module.
+ATP v1.7 — Configuration module.
 All tunable parameters live here; load via `from config import *`.
 """
 
 import os
 
 # ── Protocol version ──────────────────────────────────────────────────────────
-ATP_VERSION = "1.6.1"
+ATP_VERSION = "1.7"
 
 # ── Transport / framing ───────────────────────────────────────────────────────
 MAX_BATCH_BYTES      = 1024 * 1024    # 1 MiB max frame payload

@@ -1,5 +1,5 @@
 """
-ATP v1.6.1 — Mock Certificate Authority.
+ATP v1.7 — Mock Certificate Authority.
 Generates a persistent Ed25519 authority key and signs MCCs.
 """
 

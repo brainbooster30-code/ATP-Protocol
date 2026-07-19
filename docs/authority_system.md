@@ -1,4 +1,4 @@
-# ATP v1.6.1 — Il sistema delle autorità certificanti
+# ATP v1.7 — Il sistema delle autorità certificanti
 
 ## Perché servono autorità in ATP
 

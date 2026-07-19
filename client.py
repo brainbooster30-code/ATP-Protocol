@@ -1,5 +1,5 @@
 """
-ATP v1.6.1 — TCP/TLS Client.
+ATP v1.7 — TCP/TLS Client.
 """
 
 from __future__ import annotations

@@ -1,8 +1,8 @@
-# ATP v1.6.1 — Specifica Tecnica
+# ATP v1.7 — Specifica Tecnica
 
 **Agent Transport Protocol — Technical Specification**
 
-*Versione: 1.6.1*
+*Versione: 1.7*
 *Stato: Stabile*
 *Linguaggio di implementazione: Python 3.12+*
 
@@ -135,7 +135,7 @@ header = {
     "frame_id":    bstr .size 16,  # UUID v4
     "task_id":     bstr .size 16,  # nil UUID per frame di controllo
     "timestamp":   uint,       # Unix epoch ms
-    "atp_version": tstr,       # "1.6.1"
+    "atp_version": tstr,       # "1.7"
 }
 ```
 
@@ -302,8 +302,8 @@ generati all'avvio (modo demo). In produzione, certificati firmati da CA.
 ### 5.2 Fase 2: Version Negotiation
 
 ```
-Initiator → Responder: VERSION_PROPOSE {atp_versions: ["1.6.1"], ...}
-Responder → Initiator: VERSION_ACK {selected_version: "1.6.1", ...}
+Initiator → Responder: VERSION_PROPOSE {atp_versions: ["1.7"], ...}
+Responder → Initiator: VERSION_ACK {selected_version: "1.7", ...}
 ```
 
 I parametri negoziati includono: max_batch_bytes, clock_skew_ms,
@@ -394,7 +394,7 @@ coppia di chiavi per scopi diversi).
 
 | Parametro | Default | Descrizione |
 |-----------|---------|-------------|
-| ATP_VERSION | "1.6.1" | Versione del protocollo |
+| ATP_VERSION | "1.7" | Versione del protocollo |
 | SERVER_HOST | "127.0.0.1" | Indirizzo di default |
 | SERVER_PORT | 8443 | Porta TLS di default |
 | CLOCK_SKEW_MS | 10.000 | Tolleranza clock (10s) |

@@ -1,5 +1,5 @@
 """
-ATP SDK v1.6.1 — SimpleATPClient
+ATP SDK v1.7 — SimpleATPClient
 
 A clean, high-level client that wraps ATPClient and ATPAgent.
 Handles TLS, MCC creation, handshake, and task sending automatically.
