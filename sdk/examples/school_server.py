@@ -173,7 +173,7 @@ async def main():
         ed25519_pk=bytes.fromhex("00" * 32),
         host=local_ip,
         port=PORT,
-        mcc_hash=server.peer_mcc_hash or "",
+        mcc_hash="6a65902968167a2f370d",  # hash MCC della scuola
     )
     print()
     print(f"  🗝️  KEY CARD ESPORTATA: {card_file}")
