@@ -36,7 +36,10 @@ pip3 install aiohttp blake3 cbor2 cryptography pyngrok 2>&1 | grep -v "already s
 echo
 echo "  ✅ Installazione completata!"
 echo
-echo "  Per avviare il server (ascolta su localhost, pronta all'uso):"
-echo "    cd $ATP_DIR/ATP/sdk/examples"
+echo "  Per avviare il server:"
+echo "    cd \$ATP_DIR/ATP/sdk/examples"
 echo "    python3 school_server.py"
+echo
+echo "  Il server si connette via internet automaticamente (tunnel ngrok)."
+echo "  Nessuna configurazione di rete necessaria."
 echo
