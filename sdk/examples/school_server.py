@@ -17,7 +17,7 @@ for _p in (_SDK_DIR, _ATP_ROOT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 from atp_sdk import SimpleATPServer
-from atp_sdk.tunnel import Tunnel
+from atp_sdk.tunnel import AutoTunnel
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("school")
@@ -162,11 +162,12 @@ async def main():
     await server.start(host=HOST, port=PORT)
     logger.info("Server running. Press Ctrl+C to stop.")
 
-    # Start internet tunnel (zero-config via ngrok)
-    tunnel = Tunnel()
+    # Start internet tunnel (zero-config: UPnP → ngrok → locale)
+    tunnel = AutoTunnel()
     pub_url = await tunnel.start(PORT)
     if pub_url != f"127.0.0.1:{PORT}":
-        print(f"\n  🌐 TUNNEL INTERNET ATTIVO")
+        method = tunnel.method.upper()
+        print(f"\n  🌐 TUNNEL INTERNET ATTIVO ({method})")
         print(f"  Indirizzo pubblico: {pub_url}")
         print(f"  Client: python teacher_client.py {pub_url}")
         print()

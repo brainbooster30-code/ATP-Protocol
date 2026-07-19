@@ -127,12 +127,12 @@ async def main():
     await school.start(port=PORT)
     print("[🏫 SCUOLA] Server Futura online")
     
-    # Avvia tunnel internet zero-config (se pyngrok installato)
-    from atp_sdk.tunnel import Tunnel
-    tunnel = Tunnel()
+    # Avvia tunnel internet zero-config (UPnP → ngrok → locale)
+    from atp_sdk.tunnel import AutoTunnel
+    tunnel = AutoTunnel()
     pub_url = await tunnel.start(PORT)
     if "127.0.0.1" not in pub_url:
-        print(f"  🌐 TUNNEL INTERNET: {pub_url}")
+        print(f"  🌐 TUNNEL INTERNET ({tunnel.method.upper()}): {pub_url}")
     print()
 
     teacher = SimpleATPClient("prof-rossi")

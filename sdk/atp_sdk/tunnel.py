@@ -1,25 +1,72 @@
 """
-ATP SDK — Internet Tunnel helper
-=================================
-Zero-config internet connectivity via ngrok.
-School server gets a public URL automatically.
-Teacher client connects to that URL.
+ATP SDK — Tunnel internet zero-config.
+
+Due modalità:
+1. **UPnP** (predefinita) — apre una porta sul router via UPnP.
+   Il client si connette direttamente all'IP pubblico del server.
+   Installa: pip install miniupnpc
+
+2. **ngrok** (fallback) — crea un tunnel TCP via ngrok.
+   Il client si connette all'URL ngrok.
+   Installa: pip install pyngrok
+
+Il tunnel viene scelto automaticamente: UPnP se disponibile, ngrok altrimenti,
+localhost se nessuno dei due è installato.
 """
-import asyncio, sys, os, json, logging
+import asyncio, logging
+from typing import Optional
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+logger = logging.getLogger(__name__)
 
-logger = logging.getLogger("tunnel")
+# Check disponibilità
+try:
+    import miniupnpc
+    HAS_UPNP = True
+except ImportError:
+    HAS_UPNP = False
+
+try:
+    import ngrok
+    HAS_NGROK = True
+except ImportError:
+    try:
+        from pyngrok import ngrok
+        HAS_NGROK = True
+    except ImportError:
+        HAS_NGROK = False
 
 
-class Tunnel:
-    """Zero-config internet tunnel. Creates a public URL for the server."""
+def get_public_ip() -> str:
+    """Get public IP from external service."""
+    import urllib.request
+    for url in ["https://api.ipify.org", "https://icanhazip.com", "https://checkip.amazonaws.com"]:
+        try:
+            with urllib.request.urlopen(url, timeout=5) as r:
+                ip = r.read().decode().strip()
+                if ip:
+                    return ip
+        except Exception:
+            continue
+    return ""
+
+
+class AutoTunnel:
+    """
+    Tunnel internet zero-config. Sceglie automaticamente UPnP → ngrok → locale.
+
+    Usage:
+        tunnel = AutoTunnel()
+        url = await tunnel.start(8443)
+        print(f"Indirizzo pubblico: {url}")
+        await tunnel.stop()
+    """
 
     def __init__(self):
         self._public_host: str = ""
         self._public_port: int = 0
-        self._tunnel = None
+        self._method: str = "none"
+        self._upnp = None
+        self._ngrok_tunnel = None
 
     @property
     def public_url(self) -> str:
@@ -27,55 +74,100 @@ class Tunnel:
             return f"{self._public_host}:{self._public_port}"
         return ""
 
+    @property
+    def method(self) -> str:
+        return self._method
+
     async def start(self, local_port: int = 8443) -> str:
         """
-        Start tunnel. Returns the public URL.
-        Tries pyngrok first, falls back to local-only.
+        Avvia il tunnel.
+        Prova UPnP, poi ngrok, poi fallback a locale.
+
+        Returns: indirizzo pubblico "host:port" o "127.0.0.1:port" (locale)
         """
-        # Try pyngrok (free ngrok tunnel — no network config needed)
-        try:
-            from pyngrok import ngrok, conf
-            conf.get_default().monitor_thread = False  # silence monitor thread
+        # 1. Prova UPnP
+        if HAS_UPNP:
+            try:
+                url = await asyncio.get_event_loop().run_in_executor(
+                    None, self._do_upnp, local_port
+                )
+                if url:
+                    return url
+            except Exception as e:
+                logger.debug("UPnP non disponibile: %s", e)
 
-            token = os.environ.get("NGROK_AUTH_TOKEN", "")
-            if token:
-                ngrok.set_auth_token(token)
+        # 2. Prova ngrok
+        if HAS_NGROK:
+            try:
+                url = await self._do_ngrok(local_port)
+                if url:
+                    return url
+            except Exception as e:
+                logger.debug("ngrok non disponibile: %s", e)
 
-            self._tunnel = ngrok.connect(local_port, "tcp")
-            addr = self._tunnel.public_url.replace("tcp://", "")
-            self._public_host, port_str = addr.split(":")
-            self._public_port = int(port_str)
-            logger.info("Tunnel attivo: %s:%s (→ localhost:%s)", self._public_host, self._public_port, local_port)
-            return self.public_url
-
-        except ImportError:
-            pass  # pyngrok not installed
-        except Exception as e:
-            logger.debug("ngrok non disponibile: %s", e)
-
-        # Fallback: localhost only
+        # 3. Fallback locale
         self._public_host = "127.0.0.1"
         self._public_port = local_port
-        logger.info("Modalità locale: 127.0.0.1:%s (installa pyngrok per tunnel internet)", local_port)
+        self._method = "local"
+        logger.info("Tunnel non disponibile. Modalità locale: 127.0.0.1:%s", local_port)
+        return self.public_url
+
+    def _do_upnp(self, local_port: int) -> str:
+        """Port forwarding via UPnP (bloccante)."""
+        import miniupnpc
+        u = miniupnpc.UPnP()
+        u.discoverdelay = 2000
+        if u.discover() == 0:
+            raise RuntimeError("Nessun dispositivo UPnP trovato")
+        u.selectigd()
+
+        # IP pubblico
+        self._public_ip = u.externalipaddress() or get_public_ip()
+        if not self._public_ip or self._public_ip == "0.0.0.0":
+            raise RuntimeError("Impossibile determinare IP pubblico")
+
+        # Port forwarding
+        self._public_port = local_port
+        u.addportmapping(
+            self._public_port, "TCP",
+            u.lanaddr, local_port,
+            f"ATP v1.7 Server ({local_port})", ""
+        )
+        self._upnp = u
+        self._method = "upnp"
+        self._public_host = self._public_ip
+        logger.info("UPnP: %s:%s → %s:%s", self._public_ip, self._public_port, u.lanaddr, local_port)
+        return self.public_url
+
+    async def _do_ngrok(self, local_port: int) -> str:
+        """Tunnel via ngrok."""
+        from pyngrok import ngrok as ng
+        token = os.environ.get("NGROK_AUTH_TOKEN", "")
+        if token:
+            ng.set_auth_token(token)
+
+        self._ngrok_tunnel = ng.connect(local_port, "tcp")
+        addr = self._ngrok_tunnel.public_url.replace("tcp://", "")
+        self._public_host, port_str = addr.split(":")
+        self._public_port = int(port_str)
+        self._method = "ngrok"
+        logger.info("ngrok: %s:%s → localhost:%s", self._public_host, self._public_port, local_port)
         return self.public_url
 
     async def stop(self):
-        """Close the tunnel."""
-        if self._tunnel:
+        """Chiude il tunnel."""
+        if self._upnp:
             try:
-                from pyngrok import ngrok
-                ngrok.disconnect(self._tunnel.public_url)
+                self._upnp.deleteportmapping(self._public_port, "TCP")
             except Exception:
                 pass
-            self._tunnel = None
-
-
-# ── CLI helper ────────────────────────────────────────────────────────────────
-
-async def tunnel_info(port: int = 8443):
-    """Print public connection info."""
-    t = Tunnel()
-    url = await t.start(port)
-    print(f"  🌐 Indirizzo pubblico: {url}")
-    print(f"  📋 Client: python teacher_client.py {url}")
-    await t.stop()
+            self._upnp = None
+        if self._ngrok_tunnel:
+            try:
+                from pyngrok import ngrok as ng
+                ng.disconnect(self._ngrok_tunnel.public_url)
+            except Exception:
+                pass
+            self._ngrok_tunnel = None
+        self._public_host = ""
+        self._public_port = 0
