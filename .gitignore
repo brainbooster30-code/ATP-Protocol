@@ -9,6 +9,10 @@ graphify-out/
 obsidian-vault/
 _sdk_server_cert.pem
 _sdk_server_key.pem
+root_store.json
+root_store.db
+*.db-wal
+*.db-shm
 test_all.py
 vault_docs.py
 _debug_all.py

@@ -1,5 +1,5 @@
 """
-ATP v1.7 — pytest conftest: isolated fixtures, no singleton contamination.
+ATP v1.8 — pytest conftest: isolated fixtures, no singleton contamination.
 """
 import sys, os, tempfile, time, pytest
 
@@ -14,18 +14,25 @@ if PROJECT_ROOT not in sys.path:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @pytest.fixture(autouse=True)
-def _reset_global_state():
+def _reset_global_state(tmp_path, monkeypatch):
     """Reset all revocation singletons before each test.
     
     This is the key isolation mechanism: without it, tests leak state
     through get_cuckoo_filter(), get_root_store(), and get_gossip().
     """
+    import config
+    config.ROOT_STORE_PATH = str(tmp_path / "root_store.json")
+    monkeypatch.setenv("ATP_AUTHORITY_DIR", str(tmp_path / "authorities"))
+
     import revocation
     with revocation._revocation_lock:
         revocation._default_cuckoo = None
         revocation._default_root_store = None
         revocation._default_gossip = None
         revocation._default_degradation = None
+    import authority
+    with authority._authority_lock:
+        authority._default_authority = None
     yield
 
 

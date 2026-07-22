@@ -1,5 +1,5 @@
 """
-ATP SDK v1.7 — pytest test suite.
+ATP SDK v1.8 — pytest test suite.
 Run: python -m pytest sdk/tests/ -v --tb=short
 """
 import sys, os, tempfile, json, pytest

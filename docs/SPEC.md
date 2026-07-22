@@ -1,8 +1,8 @@
-# ATP v1.7 — Specifica Tecnica
+# ATP v1.8 — Specifica Tecnica
 
 **Agent Transport Protocol — Technical Specification**
 
-*Versione: 1.7.1*
+*Versione: 1.8*
 *Stato: Stabile*
 *Linguaggio di implementazione: Python 3.12+*
 
@@ -77,7 +77,7 @@ node_hash = BLAKE3(
 
 ### 2.5 Commitment CBOR
 
-Il commitment è un CBOR canonico dei 5 campi che vengono firmati:
+Il commitment è un CBOR canonico dei campi che vengono firmati:
 
 ```
 _commitment = {
@@ -86,9 +86,15 @@ _commitment = {
     "mcc_version":   uint,
     "authority_id":  tstr,
     "serial_number": bstr .size 16,
+    "critical_mask": [tstr],
 }
 authority_sig = Ed25519_sign(authority_sk, _commitment_cbor)
 ```
+
+`critical_mask` viene normalizzata prima della firma: valori duplicati
+rimossi e ordinamento lessicografico stabile. Un ricevente verifica la
+firma sullo stesso commitment normalizzato, quindi un attaccante non può
+alterare la lista delle claim critiche senza invalidare `authority_sig`.
 
 NOTA: `leaf_hash` NON è presente nel CBOR trasmesso. Il ricevente lo
 ricalcola dalle foglie ricevute.
@@ -101,6 +107,10 @@ ricalcola dalle foglie ricevute.
 ```
 
 Tutti i campi in critical_mask devono essere presenti tra le foglie.
+Le chiavi foglia devono essere univoche. Se una foglia replica metadati
+firmati nel commitment (`expiry_date`, `authority_id`, `mcc_version`,
+`serial_number`), il valore della foglia deve coincidere con il campo
+top-level corrispondente; altrimenti l'MCC viene rifiutato.
 
 ### 2.7 Verifica in 8 Step
 
@@ -135,11 +145,11 @@ header = {
     "frame_id":    bstr .size 16,  # UUID v4
     "task_id":     bstr .size 16,  # nil UUID per frame di controllo
     "timestamp":   uint,       # Unix epoch ms
-    "atp_version": tstr,       # "1.7"
+    "atp_version": tstr,       # "1.8"
 }
 ```
 
-### 3.3 Tipi di Frame (14)
+### 3.3 Tipi di Frame (24)
 
 | Codice | Nome | Descrizione | Fase |
 |--------|------|-------------|------|
@@ -163,6 +173,10 @@ header = {
 | 0x41 | MCC_BIND_RESPONSE | Risposta binding | Handshake (P3) |
 | 0x42 | MCC_BIND_CONFIRM | Conferma binding | Handshake (P3) |
 | 0x50 | CAPABILITY_EXCHANGE | Scambio capacità | Handshake (P4) |
+| 0x60 | PEER_DISCOVERY | Gossip peer federation | Federation |
+| 0x61 | PEER_HEARTBEAT | Heartbeat federation | Federation |
+| 0x62 | TASK_FORWARD | Inoltro task federato | Federation |
+| 0x63 | PEER_DISCOVERY_ACK | Ack discovery | Federation |
 
 ### 3.4 TASK_REQUEST (0x01)
 
@@ -239,6 +253,7 @@ MCC_BIND_REQUEST (0x40):
     "header": Header,
     "mcc_cbor": bstr,              # MCC.cbor()
     "nonce": bstr .size 16,        # CSPRNG nonce
+    "authority_pk": bstr .size 32,  # opzionale, richiesto solo per TOFU esplicito
 }
 ```
 
@@ -249,6 +264,7 @@ MCC_BIND_RESPONSE (0x41):
     "mcc_cbor": bstr,
     "nonce": bstr .size 16,
     "signature": bstr .size 64,    # Ed25519_sign(sk, peer_nonce || "atp-bind-response")
+    "authority_pk": bstr .size 32,  # opzionale, richiesto solo per TOFU esplicito
 }
 ```
 
@@ -326,8 +342,8 @@ firmati da una CA riconosciuta.
 ### 5.2 Fase 2: Version Negotiation
 
 ```
-Initiator → Responder: VERSION_PROPOSE {atp_versions: ["1.7"], ...}
-Responder → Initiator: VERSION_ACK {selected_version: "1.7", ...}
+Initiator → Responder: VERSION_PROPOSE {atp_versions: ["1.8"], ...}
+Responder → Initiator: VERSION_ACK {selected_version: "1.8", ...}
 ```
 
 I parametri negoziati includono: max_batch_bytes, clock_skew_ms,
@@ -336,10 +352,12 @@ anti_replay_ttl_ms, rate_limit_rps.
 ### 5.3 Fase 3: MCC Exchange & Identity Binding
 
 ```
-Initiator → Responder: MCC_BIND_REQUEST {mcc: MCC_i, nonce: nonce_i}
+Initiator → Responder: MCC_BIND_REQUEST {mcc: MCC_i, nonce: nonce_i,
+  authority_pk: authority_pk_i?}
 Responder verifica MCC_i (8 step)
 Responder → Initiator: MCC_BIND_RESPONSE {mcc: MCC_r, nonce: nonce_r,
-  signature: Ed25519_sign(sk_r, nonce_i + "atp-bind-response")}
+  signature: Ed25519_sign(sk_r, nonce_i + "atp-bind-response"),
+  authority_pk: authority_pk_r?}
 Initiator verifica MCC_r (8 step)
 Initiator verifica signature su nonce_i
 Initiator → Responder: MCC_BIND_CONFIRM {
@@ -420,7 +438,7 @@ coppia di chiavi per scopi diversi).
 
 | Parametro | Default | Descrizione |
 |-----------|---------|-------------|
-| ATP_VERSION | "1.7" | Versione del protocollo |
+| ATP_VERSION | "1.8" | Versione del protocollo |
 | SERVER_HOST | "127.0.0.1" | Indirizzo di default |
 | SERVER_PORT | 8443 | Porta TLS di default |
 | CLOCK_SKEW_MS | 10.000 | Tolleranza clock (10s) |
@@ -431,6 +449,9 @@ coppia di chiavi per scopi diversi).
 | DEEPSEEK_MODEL | "deepseek-chat" | Modello DeepSeek |
 | DEEPSEEK_MAX_TOKENS | 1024 | Token massimi risposta |
 | DEEPSEEK_TIMEOUT_S | 60 | Timeout chiamata DeepSeek |
+| ROOT_STORE_BACKEND | "json" | Backend RootStore (`json` o `sqlite`) |
+| ROOT_STORE_PATH | "" | Path override; default `~/.atp/root_store.json` o `.db` |
+| TRUST_BOOTSTRAP_MODE | "strict" | `strict` rifiuta authority ignote; `tofu` pinna solo se richiesto |
 
 ---
 
@@ -466,9 +487,13 @@ random) e `manifest_ts` (timestamp di creazione). `chain_add` rifiuta:
 - Manifest con `manifest_nonce` già visto (anti-replay)
 Il set di nonce è limitato a 10.000 entry con pruning automatico.
 
+Nonce e stato `rootstore_version` vengono aggiornati solo dopo verifica
+positiva della firma e del signer gia fidato; manifest non validi non possono
+avvelenare lo stato anti-replay o il version tracking.
+
 **RootStore version tracking:** Il RootStore mantiene un contatore monotonic
 `_version`, incrementato a ogni `add_authority`. Ogni manifest include
-`rootstore_version`. `chain_add` rifiuta manifest con versione ≤ ultima
+`rootstore_version`. `chain_add` rifiuta manifest con versione < ultima
 versione conosciuta per quell'autorità.
 
 ### 9.8 Stress Test
@@ -496,7 +521,7 @@ nell'MCC, viene derivata una chiave AES-256-GCM simmetrica.
 3. Dopo handshake, ogni lato calcola:
    ```
    shared_secret = X25519(own_sk, peer_pk)
-   kdf_input = "atp-v1.7-ecdh" ++ shared_secret ++ sorted(local_pk, remote_pk)
+   kdf_input = "atp-v1.8-ecdh" ++ shared_secret ++ sorted(local_pk, remote_pk)
    session_key = BLAKE3(kdf_input)   # 32 byte, AES-256 key
    ```
 4. Le chiavi pubbliche sono ordinate (sorted) per garantire KDF
@@ -547,24 +572,34 @@ implementa `QUICServer` e `QUICClient` con API identica a TCP.
 (non async). ATP usa `asyncio.create_task()` per avviare il handler
 in background.
 
-**RootStore push:** Entrambi i lati condividono i propri RootStore
-dopo handshake tramite il frame `ROOT_STORE_UPDATE` (0x21).
-Il push avviene nel reader loop (non durante handshake) per evitare
-deadlock su QUIC.
+**RootStore push:** Entrambi i lati possono inviare un
+`ROOT_STORE_UPDATE` (0x21) dopo handshake. Il push avviene nel reader loop
+(non durante handshake) per evitare deadlock su QUIC.
 
-### 9.6 Multi-authority Bootstrap
+Il frame supporta due manifest:
 
-Quando un peer riceve un `ROOT_STORE_UPDATE` con un manifest firmato
-da un'autorità sconosciuta, tenta il bootstrap:
+1. `rootstore-advertisement`: firmato con la chiave Ed25519 dell'agente
+   già autenticata dall'MCC. Serve solo a confrontare lo stato: il
+   ricevente verifica firma, `manifest_nonce` (16 byte), `manifest_ts`
+   (finestra 5 minuti) e conteggia authority note, ignote o divergenti.
+   Non aggiunge authority sconosciute al RootStore.
+2. `authority-chain`: firmato da una authority già fidata nel RootStore.
+   Solo questo manifest può estendere il RootStore tramite `chain_add`.
 
-1. Cerca l'`authority_id` nella lista `authorities` del manifest
-2. Se trovato, usa quella chiave pubblica per verificare la firma
-3. Se la firma è valida, aggiunge l'autorità al RootStore
-4. Tutte le autorità nel manifest vengono aggiunte al RootStore
+### 9.6 Trust Bootstrap
 
-Questo permette trust bootstrap senza registrazione manuale:
-ogni agente include la propria chiave Ed25519 nel manifest
-che invia al peer durante il push post-handshake.
+Il bootstrap è esplicito:
+
+1. Default `TRUST_BOOTSTRAP_MODE="strict"`: una authority non presente nel
+   RootStore fa fallire la verifica MCC.
+2. `trust_bootstrap_mode="tofu"`: il bind frame deve includere
+   `authority_pk` di 32 byte; l'MCC viene verificato con quella chiave e,
+   se valido, l'authority viene pinnata nel RootStore locale.
+3. Per produzione multi-authority: distribuire una chain firmata da una
+   authority già fidata o pre-provisionare le authority nel RootStore.
+
+Un `ROOT_STORE_UPDATE` agent-signed non è un canale di bootstrap
+autoritativo.
 
 ### 9.7 Federation Protocol (v2.0)
 
@@ -588,6 +623,9 @@ I frame 0x60-0x63 abilitano peer discovery, heartbeat e task forwarding.
 4. PEER_DISCOVERY contiene: peer_id, host, port, ed25519_pk, capabilities
 5. PEER_HEARTBEAT aggiorna `last_seen` — peer non visti da >90s sono rimossi
 6. TASK_FORWARD inoltra task con TTL: ogni hop decrementa, TTL=0 scarta
+
+`PEER_DISCOVERY` e `TASK_FORWARD` senza firma Ed25519 valida vengono
+ignorati. Non è previsto fallback unsigned.
 
 **Esempio TASK_FORWARD:**
 ```
@@ -613,7 +651,11 @@ con `HANDSHAKE_TIMEOUT_S = 30s`.
 `chain_add` rifiuta ts > 5 minuti o nonce duplicato.
 
 **RootStore version tracking:** `_version` monotonic, incluso in manifest.
-`chain_add` rifiuta versioni ≤ latest known.
+`chain_add` rifiuta versioni < latest known; versioni uguali sono
+permesse quando nonce e timestamp sono freschi.
+
+Il commit di nonce, versione, authority aggiunte e chain entry avviene solo
+dopo validazione schema, freshness, firma e trust del signer.
 
 **mTLS Certificate Rotation:** `CertRotator` controlla scadenza ogni ora
 (`CERT_ROTATION_CHECK_INTERVAL_S = 3600`). Se il cert scade entro
@@ -628,25 +670,23 @@ e latenza P50/P99/max. Risultato: 95 task/s, P99 94ms, 0% errori.
 
 | Metriche test (pytest) | Valore |
 |---|---|
-| Test totali | 52 (45 core + 7 SDK) |
-| Test passati | 52/52 |
-| Tempo esecuzione | ~2.8s |
+| Test totali | 60 |
+| Test passati | 60/60 |
+| Tempo esecuzione | ~7s |
 | Fixture isolate | ✅ (conftest con reset stato globale) |
 
 ### 9.9 Quality Hardening (v1.8+)
 
-**Agent-signed RootStore push:** Il manifest `ROOT_STORE_UPDATE` (0x21)
-è ora firmato con la chiave Ed25519 dell'agente (`identity.ed25519_sk`)
-invece della chiave privata dell'autorità condivisa. Il ricevente verifica
-la firma usando la chiave pubblica Ed25519 ottenuta dall'MCC scambiato
-durante l'handshake. Questo elimina la vulnerabilità di authority key
-leak (qualsiasi agente compromesso poteva firmare manifest arbitrari).
+**Agent-signed RootStore push:** Il manifest `rootstore-advertisement`
+di `ROOT_STORE_UPDATE` (0x21) è firmato con la chiave Ed25519 dell'agente
+(`identity.ed25519_sk`). Il ricevente verifica la firma usando la chiave
+pubblica Ed25519 ottenuta dall'MCC scambiato durante l'handshake. Il
+manifest è informativo e non concede fiducia a authority ignote.
 
 **Gossip Ed25519 authentication:** Il gossip protocol ora firma ogni
 payload con la chiave Ed25519 del nodo mittente. Il `GossipServer`
 ricevente verifica la firma se la chiave pubblica del mittente è nota.
-Backward compat: formato flat list v1 e dict unsigned accettati durante
-migrazione.
+Il path ATP di federazione non accetta discovery o forwarding unsigned.
 
 **hostname verification:** `check_hostname` è controllato dalla variabile
 d'ambiente `ATP_ENFORCE_HOSTNAME=true`. Disabilitato di default per
@@ -658,6 +698,6 @@ rotation, QUIC certs). Le funzioni E2E pure sono in `agent_crypto.py`.
 `agent.py` è sceso da ~1.873 a ~1.620 linee.
 
 **Test modernizzati:** La test suite è stata convertita da runner custom
-a pytest con 52 test, fixture isolate (reset automatico dello stato
+a pytest con 60 test, fixture isolate (reset automatico dello stato
 globale revocation tramite `conftest.py`), e compatibilità `__main__`
 per esecuzione diretta.

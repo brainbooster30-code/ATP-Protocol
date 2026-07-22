@@ -1,8 +1,8 @@
-# ATP v1.7 — Draft Design Document
+# ATP v1.8 — Draft Design Document
 
 **Agent Transport Protocol — Un protocollo peer-to-peer per agenti autonomi**
 
-*Versione: 1.7 (Draft — 19 Luglio 2026)*
+*Versione: 1.8 (Draft — 22 Luglio 2026)*
 
 ---
 
@@ -110,7 +110,7 @@ standard per tre ragioni:
 
 ## 5. Stato attuale
 
-ATP v1.7 è un'implementazione funzionante con:
+ATP v1.8 è un'implementazione funzionante con:
 
 - **21 moduli Python** (atp_core, agent, agent_tls, agent_crypto, server, client,
   config, authority, revocation, revocation_sqlite, federation, monitor,
@@ -118,7 +118,7 @@ ATP v1.7 è un'implementazione funzionante con:
 - **SDK Python** pip-installabile (SimpleATPClient, SimpleATPServer, Tunnel)
 - **6 esempi reali** (research, code review, voting, teacher, school, azienda)
 - **Dashboard PySide6** con 5 tab (Overview, Traffic, Connections, Agents, Tasks)
-- **Test suite**: 52 test pytest (45 core + 7 SDK), fixture isolate,
+- **Test suite**: 60 test pytest, fixture isolate,
   contaminazione singleton eliminata via conftest con reset stato globale
 - **Score architetturale**: 9.5/10
 - **Zero configurazione di rete**: tunnel UPnP nativo integrato
@@ -127,9 +127,9 @@ ATP v1.7 è un'implementazione funzionante con:
 
 - **[x] Multiplexing task**: task concorrenti per task_id con asyncio.Future
 - **[x] Gossip attivo**: seriali revocati su TCP (porta 8444) + CONTROL_REVOKE_NOTIFY
-- **[x] RootStore persistente**: autorità salvate su root_store.json
+- **[x] RootStore persistente**: autorità salvate fuori repo sotto `~/.atp/`
 - **[x] Mutual TLS**: CA condivisa, CERT_REQUIRED su entrambi i lati
-- **[x] Verifica MCC sempre obbligatoria**: rimossa demo_mode
+- **[x] Verifica MCC sempre obbligatoria**: niente bypass demo; TOFU solo esplicito
 - **[x] BLAKE3 obbligatorio**: nessun fallback a BLAKE2b
 - **[ ] Multiplexing task stream (stream ID multipli)**
 - [ ] Crittografia end-to-end con X25519 ECDH

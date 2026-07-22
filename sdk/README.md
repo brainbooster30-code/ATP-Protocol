@@ -1,6 +1,6 @@
 # ATP SDK v1.8
 
-**Easy-to-use Python SDK for the Agent Transfer Protocol.**
+**Easy-to-use Python SDK for the Agent Transport Protocol.**
 
 Build federated AI-agent networks in just a few lines of code. The SDK wraps the full ATP v1.8 protocol — TLS, MCC (Merkle-Claim Card), identity binding, handshake, task dispatch, federation, and revocation — behind a clean, minimal API.
 
@@ -188,7 +188,7 @@ All dependencies are installed automatically via `pip install -e .[all]`
 
 ## Protocol
 
-ATP v1.8 — Agent Transfer Protocol. A cryptographic protocol for secure, verifiable communication between AI agents. Features include:
+ATP v1.8 — Agent Transport Protocol. A cryptographic protocol for secure, verifiable communication between AI agents. Features include:
 
 - **MCC** (Merkle-Claim Card) — verifiable identity credentials
 - **5-phase handshake** — version → MCC → binding → capability → tasks

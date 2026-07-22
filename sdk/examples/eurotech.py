@@ -2,7 +2,7 @@
 r"""ATP SDK — Production-Grade Example: EuroTech Solutions.
 
 Scenario: multinazionale europea con 4 sedi che comunicano via ATP
-v1.7 per condividere risorse agentiche (AI, knowledge base, task queue).
+v1.8 per condividere risorse agentiche (AI, knowledge base, task queue).
 
 Sedi:
   [MIL] Centrale Milano     - AI cluster DeepSeek, orchestrazione, DB centrale
@@ -521,7 +521,10 @@ class SedeAgent:
         logger.info("═" * 64)
 
         # Avvia server ATP
-        self.server = SimpleATPServer(agent_name=f"eurotech-{codice.lower()}")
+        self.server = SimpleATPServer(
+            agent_name=f"eurotech-{codice.lower()}",
+            trust_bootstrap_mode="tofu",
+        )
         self._register_handlers()
         await self.server.start(port=self.config.port)
 
@@ -575,7 +578,8 @@ class SedeAgent:
                 continue
             try:
                 client = SimpleATPClient(
-                    agent_name=f"eurotech-{self.config.codice.lower()}->{codice}"
+                    agent_name=f"eurotech-{self.config.codice.lower()}->{codice}",
+                    trust_bootstrap_mode="tofu",
                 )
                 ok = await client.connect(host=cfg.host, port=cfg.port)
                 if ok:
@@ -621,7 +625,8 @@ class SedeAgent:
                 if codice not in self._peers:
                     try:
                         client = SimpleATPClient(
-                            agent_name=f"eurotech-{self.config.codice.lower()}->{codice}"
+                            agent_name=f"eurotech-{self.config.codice.lower()}->{codice}",
+                            trust_bootstrap_mode="tofu",
                         )
                         ok = await client.connect(host=cfg.host, port=cfg.port)
                         if ok:
@@ -773,7 +778,7 @@ async def run_demo_completa() -> None:
     """Demo locale: avvia tutte le 4 sedi in parallelo e simula interazioni reali."""
     logger.info("")
     logger.info("╔══════════════════════════════════════════════════════════════╗")
-    logger.info("║   🏢  EuroTech Solutions — ATP v1.7 Production Demo       ║")
+    logger.info("║   🏢  EuroTech Solutions — ATP v1.8 Production Demo       ║")
     logger.info("║   Federazione multi-sede con 4 agenti autonomi            ║")
     logger.info("╚══════════════════════════════════════════════════════════════╝")
     logger.info("")
@@ -946,7 +951,7 @@ def process_data(items):
         logger.info("║  🏢 %-20s [%s] peer=%d load=%.1f uptime=%ds  ║",
                      cfg.nome, codice, peers, load, int(uptime))
     logger.info("╠" + "═" * 60 + "╣")
-    logger.info("║  Eventi audit: %-3d | Protocollo: ATP v1.7               ║",
+    logger.info("║  Eventi audit: %-3d | Protocollo: ATP v1.8               ║",
                  len(_AUDIT_LOG))
     logger.info("║  Ogni transazione è firmata con MCC Ed25519              ║")
     logger.info("║  Nessun server centrale — federazione peer-to-peer       ║")
@@ -1002,7 +1007,7 @@ def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="EuroTech Solutions — ATP v1.7 Multi-Site Agent Federation",
+        description="EuroTech Solutions — ATP v1.8 Multi-Site Agent Federation",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Esempi:

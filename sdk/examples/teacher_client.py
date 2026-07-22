@@ -138,7 +138,7 @@ async def main():
     print(f"  Connessione a: {host}:{port}")
     print()
 
-    client = SimpleATPClient(TEACHER_NAME)
+    client = SimpleATPClient(TEACHER_NAME, trust_bootstrap_mode="tofu")
 
     try:
         ok = await client.connect(host=host, port=port)

@@ -285,7 +285,7 @@ class UPNPTunnel:
         Restituisce "IP:pubblica:porta" o "127.0.0.1:porta" in fallback.
         """
         ip, port = await asyncio.get_event_loop().run_in_executor(
-            None, upnp_add_port, local_port, "ATP v1.7 Server"
+            None, upnp_add_port, local_port, "ATP v1.8 Server"
         )
         if ip and port:
             self._public_ip = ip

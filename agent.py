@@ -1,5 +1,5 @@
 """
-ATP v1.7 — Agent: identity, handshake (5 phases), task lifecycle, DeepSeek.
+ATP v1.8 — Agent: identity, handshake (5 phases), task lifecycle, DeepSeek.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from config import (
     ANTI_REPLAY_TTL_MS,
     RATE_LIMIT_RPS,
     MAX_BATCH_BYTES,
+    TRUST_BOOTSTRAP_MODE,
     get_deepseek_api_key,
     DEEPSEEK_MODEL,
     DEEPSEEK_API_URL,
@@ -173,6 +174,7 @@ class ATPAgent:
         task_handler: Optional[Callable[[dict], Awaitable[dict]]] = None,
         rate_limiter=None,
         anti_replay=None,
+        trust_bootstrap_mode: Optional[str] = None,
     ):
         self.identity = identity
         self.is_server = is_server
@@ -180,6 +182,7 @@ class ATPAgent:
         self.task_handler = task_handler  # async callable(task_payload) -> result
         self.rate_limiter = rate_limiter
         self.anti_replay = anti_replay
+        self.trust_bootstrap_mode = (trust_bootstrap_mode or TRUST_BOOTSTRAP_MODE).lower()
 
         self.mcc: Optional[MCC] = create_mcc_for_identity(identity)
         self.peer_mcc: Optional[MCC] = None
@@ -198,6 +201,12 @@ class ATPAgent:
         self._e2e_key: Optional[bytes] = None
         self._peer_ed25519_pk: Optional[bytes] = None
         self._root_store_pushed: bool = False
+        self._root_store_nonces: set[bytes] = set()
+
+        # Ephemeral X25519 keypair for forward secrecy (ECDHE)
+        self._eph_sk: bytes = b""
+        self._eph_pk: bytes = b""
+        self._peer_eph_pk: Optional[bytes] = None
 
         # Buffered frame reader (higher throughput, fewer syscalls)
         self._buffered_reader: Optional[BufferedFrameReader] = None
@@ -217,6 +226,53 @@ class ATPAgent:
 
     # ── public API ───────────────────────────────────────────────────────
 
+    def _local_authority_pk(self) -> bytes:
+        """Return the authority public key for this agent's MCC."""
+        if not self.mcc:
+            return b""
+        from revocation import get_root_store
+        rs = get_root_store()
+        auth_pk = rs.get_authority(self.mcc.authority_id)
+        if auth_pk:
+            return auth_pk
+        authority = get_default_authority()
+        if authority.authority_id == self.mcc.authority_id:
+            return authority.public_key
+        return b""
+
+    def _verify_peer_mcc(self, peer_mcc: MCC, source_frame: dict) -> bool:
+        """Verify a peer MCC using strict trust or explicit TOFU bootstrap."""
+        from revocation import get_root_store, get_degradation
+
+        rs = get_root_store()
+        auth_pk = rs.get_authority(peer_mcc.authority_id)
+        if auth_pk is not None:
+            return peer_mcc.verify(auth_pk, check_revoked=True)
+
+        if self.trust_bootstrap_mode == "tofu":
+            candidate = source_frame.get("authority_pk", b"")
+            if not isinstance(candidate, bytes) or len(candidate) != 32:
+                logger.warning("MCC verify: TOFU requested but authority_pk is missing/invalid")
+                return False
+            if not peer_mcc.verify(candidate, check_revoked=True):
+                return False
+            rs.add_authority(peer_mcc.authority_id, candidate)
+            logger.warning("Trust bootstrap TOFU: pinned authority %s", peer_mcc.authority_id)
+            return True
+
+        deg_state = get_degradation().evaluate(peer_mcc.authority_id, rs)
+        if self.monitor:
+            self.monitor.add_event("DEGRADATION_STATE", {
+                "conn_id": self._conn_id,
+                "state": deg_state,
+                "authority_id": peer_mcc.authority_id,
+            })
+        logger.warning(
+            "MCC verify: authority %s not trusted (mode=%s)",
+            peer_mcc.authority_id, self.trust_bootstrap_mode,
+        )
+        return False
+
     async def perform_handshake(
         self,
         reader: asyncio.StreamReader,
@@ -229,6 +285,9 @@ class ATPAgent:
         self._reader = reader
         self._writer = writer
         self._conn_id = uuid.uuid4().hex[:12]
+
+        # Generate ephemeral X25519 keypair for ECDHE forward secrecy
+        self._eph_sk, self._eph_pk = generate_x25519_keypair()
 
         from config import HANDSHAKE_TIMEOUT_S, USE_BUFFERED_READER
 
@@ -582,44 +641,7 @@ class ATPAgent:
                         "serials_count": count,
                     })
             elif ft == 0x21:
-                """ROOT_STORE_UPDATE — receive a signed root store manifest from peer.
-
-                Two verification paths:
-                1. Agent-signed (preferred): verify with peer's Ed25519 key from MCC
-                2. Authority-signed (legacy): verify via chain_add with RootStore authority lookup
-                """
-                signed_manifest = frame.get("signed_manifest", b"")
-                if not signed_manifest:
-                    return
-                from revocation import get_root_store
-                rs = get_root_store()
-                # Try agent-signed path first (ATP v1.8+)
-                if self._peer_ed25519_pk:
-                    import cbor2 as _cbor2
-                    from atp_core import ed25519_verify as _ed25519_verify
-                    try:
-                        manifest = _cbor2.loads(signed_manifest)
-                        sig = manifest.pop("signature", b"")
-                        if len(sig) != 64:
-                            raise ValueError("bad signature length")
-                        payload = _cbor2.dumps(manifest, canonical=True)
-                        if not _ed25519_verify(self._peer_ed25519_pk, sig, payload):
-                            logger.warning("RootStore update rejected (bad agent signature)")
-                            return
-                        count = 0
-                        for entry in manifest.get("authorities", []):
-                            rs.add_authority(entry["authority_id"], entry["pk"])
-                            count += 1
-                        logger.info("RootStore updated via agent-signed manifest from %s (%d authorities)",
-                                    manifest.get("sender_name", "?"), count)
-                    except Exception as exc:
-                        logger.warning("RootStore update error: %s", exc)
-                else:
-                    # Legacy path: verify via chain_add with authority key lookup
-                    if rs.chain_add(signed_manifest):
-                        logger.info("RootStore updated via chain_add (legacy)")
-                    else:
-                        logger.warning("RootStore update rejected (legacy chain_add)")
+                await self._handle_root_store_update(frame)
             # Federation handlers (v2.0)
             elif ft == 0x60:
                 """PEER_DISCOVERY — receive peer list from federated peer.
@@ -637,21 +659,23 @@ class ATPAgent:
                         if leaf.key == "agent_sign_pk":
                             peer_sign_pk = leaf.value
                             break
-                if peer_sign_pk and peer_sig:
-                    import cbor2 as _cbor2
-                    from atp_core import ed25519_verify
-                    expected_payload = _cbor2.dumps(
-                        {"node_id": peer_node_id, "peers": peers},
-                        canonical=True,
-                    )
-                    if not ed25519_verify(peer_sign_pk, peer_sig, expected_payload):
-                        logger.warning("PEER_DISCOVERY: bad signature from %s — ignoring",
-                                       peer_node_id[:16])
-                        return
-                elif peer_sig:
-                    logger.warning("PEER_DISCOVERY: signature present but no peer Ed25519 key — ignoring")
+                if not peer_sign_pk:
+                    logger.warning("PEER_DISCOVERY: no peer Ed25519 key — ignoring")
                     return
-                # No signature → accept (backward compat during migration)
+                if not peer_sig:
+                    logger.warning("PEER_DISCOVERY: missing signature from %s — ignoring",
+                                   peer_node_id[:16])
+                    return
+                import cbor2 as _cbor2
+                from atp_core import ed25519_verify
+                expected_payload = _cbor2.dumps(
+                    {"node_id": peer_node_id, "peers": peers},
+                    canonical=True,
+                )
+                if not ed25519_verify(peer_sign_pk, peer_sig, expected_payload):
+                    logger.warning("PEER_DISCOVERY: bad signature from %s — ignoring",
+                                   peer_node_id[:16])
+                    return
                 from federation import FederationRouter, PeerRecord
                 if not hasattr(self, "_fed_router"):
                     self._fed_router = None  # set by ATPServer
@@ -699,23 +723,25 @@ class ATPAgent:
                         if leaf.key == "agent_sign_pk":
                             peer_sign_pk = leaf.value
                             break
-                if peer_sign_pk and fwd_sig:
-                    import cbor2 as _cbor2
-                    from atp_core import ed25519_verify
-                    expected = _cbor2.dumps({
-                        "target_peer_id": target,
-                        "ttl": ttl,
-                        "task_frame": inner_task,
-                        "forwarder_id": fwd_id,
-                    }, canonical=True)
-                    if not ed25519_verify(peer_sign_pk, fwd_sig, expected):
-                        logger.warning("TASK_FORWARD: bad signature from %s — dropping",
-                                       fwd_id[:16])
-                        return
-                elif fwd_sig:
-                    logger.warning("TASK_FORWARD: signature present but no peer Ed25519 key — dropping")
+                if not peer_sign_pk:
+                    logger.warning("TASK_FORWARD: no peer Ed25519 key — dropping")
                     return
-                # No signature → accept (backward compat during migration)
+                if not fwd_sig:
+                    logger.warning("TASK_FORWARD: missing signature from %s — dropping",
+                                   fwd_id[:16])
+                    return
+                import cbor2 as _cbor2
+                from atp_core import ed25519_verify
+                expected = _cbor2.dumps({
+                    "target_peer_id": target,
+                    "ttl": ttl,
+                    "task_frame": inner_task,
+                    "forwarder_id": fwd_id,
+                }, canonical=True)
+                if not ed25519_verify(peer_sign_pk, fwd_sig, expected):
+                    logger.warning("TASK_FORWARD: bad signature from %s — dropping",
+                                   fwd_id[:16])
+                    return
                 # Re-forward if we're not the target
                 if hasattr(self, "_fed_router") and self._fed_router:
                     if target and target != self._fed_router.node_id:
@@ -753,35 +779,7 @@ class ATPAgent:
             elif ft == 0x16:
                 self._last_peer_activity = time.time()
             elif ft == 0x21:
-                """ROOT_STORE_UPDATE received on client side.
-                Verify with peer's Ed25519 key from MCC (or legacy chain_add).
-                """
-                signed_manifest = frame.get("signed_manifest", b"")
-                if not signed_manifest:
-                    return
-                from revocation import get_root_store
-                rs = get_root_store()
-                if self._peer_ed25519_pk:
-                    import cbor2 as _cbor2
-                    from atp_core import ed25519_verify as _ed25519_verify
-                    try:
-                        manifest = _cbor2.loads(signed_manifest)
-                        sig = manifest.pop("signature", b"")
-                        if len(sig) != 64:
-                            raise ValueError("bad signature length")
-                        payload = _cbor2.dumps(manifest, canonical=True)
-                        if not _ed25519_verify(self._peer_ed25519_pk, sig, payload):
-                            logger.warning("Client RootStore update rejected (bad agent signature)")
-                            return
-                        for entry in manifest.get("authorities", []):
-                            rs.add_authority(entry["authority_id"], entry["pk"])
-                        logger.info("Client RootStore updated via agent-signed manifest from %s",
-                                    manifest.get("sender_name", "?"))
-                    except Exception as exc:
-                        logger.warning("Client RootStore update error: %s", exc)
-                else:
-                    if rs.chain_add(signed_manifest):
-                        logger.info("Client RootStore updated via chain_add (legacy)")
+                await self._handle_root_store_update(frame)
             elif ft == 0x20:
                 logger.warning("Received ERROR frame: %s", frame.get("error_message"))
 
@@ -851,27 +849,90 @@ class ATPAgent:
     # ── E2E ECDH + AES-GCM ─────────────────────────────────────────
 
     def _derive_session_key(self, peer_x25519_pk: bytes) -> Optional[bytes]:
-        """Derive AES-256-GCM session key from ECDH shared secret.
+        """Derive AES-256-GCM session key from X25519 ECDH shared secret.
 
         Uses X25519 ECDH + BLAKE3 KDF with domain separation.
         Both sides sort public keys deterministically so the
         derived key is identical.
 
+        When ephemeral keys are available (ECDHE), derives from:
+          ECDH(eph_sk, peer_eph_pk)  —  forward secret
+
+        Falls back to static ECDH for backward compatibility with
+        peers that don't support ECDHE.
+
         Returns 32-byte AES key, or None if peer key is invalid.
         """
+        # Prefer ECDHE (forward secrecy) when both sides have ephemeral keys
+        if self._eph_sk and self._peer_eph_pk:
+            if len(self._peer_eph_pk) != 32 or len(self._eph_sk) != 32:
+                return None
+            try:
+                eph_sk = x25519.X25519PrivateKey.from_private_bytes(self._eph_sk)
+                peer_eph_pk = x25519.X25519PublicKey.from_public_bytes(
+                    self._peer_eph_pk
+                )
+                shared_secret = eph_sk.exchange(peer_eph_pk)
+                pk1, pk2 = sorted([self._peer_eph_pk, self._eph_pk])
+                kdf_input = b"atp-v1.8-ecdhe" + shared_secret + pk1 + pk2
+                return blake3_hash(kdf_input)
+            except Exception:
+                logger.exception("ECDHE key derivation failed")
+                return None
+
+        # Fallback: static ECDH (backward compat, no forward secrecy)
         if len(peer_x25519_pk) != 32 or len(self.identity.x25519_sk) != 32:
             return None
         try:
-            our_sk = x25519.X25519PrivateKey.from_private_bytes(self.identity.x25519_sk)
+            our_sk = x25519.X25519PrivateKey.from_private_bytes(
+                self.identity.x25519_sk
+            )
             peer_pk = x25519.X25519PublicKey.from_public_bytes(peer_x25519_pk)
             shared_secret = our_sk.exchange(peer_pk)
-            # Sort public keys so both sides derive the same key
             pk1, pk2 = sorted([peer_x25519_pk, self.identity.x25519_pk])
-            kdf_input = b"atp-v1.7-ecdh" + shared_secret + pk1 + pk2
+            kdf_input = b"atp-v1.8-ecdh" + shared_secret + pk1 + pk2
             return blake3_hash(kdf_input)
         except Exception:
-            logger.exception("ECDH key derivation failed")
+            logger.exception("ECDH key derivation failed (static fallback)")
             return None
+
+    def _setup_e2e(self):
+        """Derive E2E session key from ECDHE ephemeral keys (preferred)
+        or static ECDH (fallback).
+
+        Stores session key in self._e2e_key, peer Ed25519 pk for auth.
+        """
+        self._e2e_key: Optional[bytes] = None
+        self._peer_ed25519_pk: Optional[bytes] = None
+        if self.peer_mcc is None:
+            return
+
+        # Read peer's static X25519 pk from MCC (used for ECDH fallback)
+        peer_static_pk = None
+        for leaf in self.peer_mcc.leaves:
+            if leaf.key == "agent_pk":
+                peer_static_pk = leaf.value
+            elif leaf.key == "agent_sign_pk":
+                self._peer_ed25519_pk = leaf.value
+
+        if peer_static_pk is None:
+            logger.warning("E2E setup: no agent_pk in peer MCC")
+            return
+
+        # Try ECDHE first, fall back to static ECDH
+        if self._eph_sk and self._peer_eph_pk:
+            pk = self._derive_session_key(peer_static_pk)
+            # _derive_session_key uses ECDHE when eph fields are set
+        else:
+            pk = self._derive_session_key(peer_static_pk)
+
+        if pk:
+            self._e2e_key = pk
+            method = "ECDHE" if (self._eph_sk and self._peer_eph_pk) else "ECDH"
+            logger.info(
+                "E2E session key derived (%s: %s...)",
+                method, pk.hex()[:8],
+            )
 
     @staticmethod
     def _e2e_encrypt(plaintext: bytes, session_key: bytes) -> bytes:
@@ -925,22 +986,77 @@ class ATPAgent:
             return None
         return self._e2e_decrypt(encrypted, session_key)
 
-    def _setup_e2e(self):
-        """Derive E2E session key from peer's X25519 public key in MCC.
-        Stores session key in self._e2e_key, peer Ed25519 pk for auth.
-        """
-        self._e2e_key: Optional[bytes] = None
-        self._peer_ed25519_pk: Optional[bytes] = None
-        if self.peer_mcc is None:
+    async def _handle_root_store_update(self, frame: dict):
+        """Handle ROOT_STORE_UPDATE without granting trust to agent-signed ads."""
+        signed_manifest = frame.get("signed_manifest", b"")
+        if not signed_manifest:
             return
-        for leaf in self.peer_mcc.leaves:
-            if leaf.key == "agent_pk":
-                pk = self._derive_session_key(leaf.value)
-                if pk:
-                    self._e2e_key = pk
-                    logger.info("E2E ECDH session key derived (%s...)", pk.hex()[:8])
-            elif leaf.key == "agent_sign_pk":
-                self._peer_ed25519_pk = leaf.value
+
+        from revocation import get_root_store
+        rs = get_root_store()
+
+        try:
+            manifest = cbor2.loads(signed_manifest)
+        except Exception as exc:
+            logger.warning("RootStore update rejected (bad CBOR): %s", exc)
+            return
+
+        manifest_type = manifest.get("manifest_type", "")
+        if manifest_type == "authority-chain":
+            if rs.chain_add(signed_manifest):
+                logger.info("RootStore updated via authority-chain manifest")
+            else:
+                logger.warning("RootStore authority-chain manifest rejected")
+            return
+
+        if manifest_type != "rootstore-advertisement":
+            logger.warning("RootStore update rejected (unknown manifest_type=%r)", manifest_type)
+            return
+
+        if not self._peer_ed25519_pk:
+            logger.warning("RootStore advertisement rejected (no peer Ed25519 key)")
+            return
+
+        sig = manifest.pop("signature", b"")
+        if len(sig) != 64:
+            logger.warning("RootStore advertisement rejected (bad signature length)")
+            return
+
+        payload = cbor2.dumps(manifest, canonical=True)
+        if not ed25519_verify(self._peer_ed25519_pk, sig, payload):
+            logger.warning("RootStore advertisement rejected (bad agent signature)")
+            return
+
+        nonce = manifest.get("manifest_nonce", b"")
+        manifest_ts = manifest.get("manifest_ts", 0)
+        now = int(time.time())
+        if not isinstance(nonce, bytes) or len(nonce) != 16:
+            logger.warning("RootStore advertisement rejected (missing nonce)")
+            return
+        if nonce in self._root_store_nonces:
+            logger.warning("RootStore advertisement rejected (duplicate nonce)")
+            return
+        if not isinstance(manifest_ts, int) or abs(now - manifest_ts) > 300:
+            logger.warning("RootStore advertisement rejected (stale timestamp)")
+            return
+        self._root_store_nonces.add(nonce)
+
+        matched = skipped_unknown = skipped_conflict = 0
+        for entry in manifest.get("authorities", []):
+            authority_id = entry.get("authority_id", "")
+            pk = entry.get("pk", b"")
+            current = rs.get_authority(authority_id)
+            if current is None:
+                skipped_unknown += 1
+            elif current != pk:
+                skipped_conflict += 1
+            else:
+                matched += 1
+
+        logger.info(
+            "RootStore advertisement from %s: matched=%d skipped_unknown=%d skipped_conflict=%d",
+            manifest.get("sender_name", "?"), matched, skipped_unknown, skipped_conflict,
+        )
 
     async def _maybe_push_root_store(self):
         """Push RootStore to peer once after handshake.
@@ -968,11 +1084,12 @@ class ATPAgent:
         # NOT the shared authority key.  The receiver verifies using our
         # Ed25519 public key from the MCC exchanged during handshake.
         manifest_data = {
+            "manifest_type": "rootstore-advertisement",
             "manifest_version": 1,
             "manifest_id": os.urandom(16),
             "manifest_nonce": os.urandom(16),     # anti-replay
             "manifest_ts": int(time.time()),       # freshness window
-            "rootstore_version": rs._version,      # monotonic counter
+            "rootstore_version": getattr(rs, "_version", manifest.get("version", 1)),
             "timestamp": int(time.time()),
             "sender_name": self.identity.agent_name,
             "authorities": [
@@ -1120,29 +1237,9 @@ class ATPAgent:
             raise ConnectionError("MCC_BIND_REQUEST missing mcc_cbor")
         self.peer_mcc = MCC.from_cbor(peer_mcc_raw)
 
-        # Verify peer's MCC — sempre obbligatorio (demo_mode rimosso)
-        # Full ATP-Full: lookup authority in RootStore, verify signature, check revocation
-        from revocation import get_root_store, get_degradation
-        from authority import get_default_authority
-        rs = get_root_store()
-        dp = get_degradation()
-        auth_pk = rs.get_authority(self.peer_mcc.authority_id)
-
-        if auth_pk is None:
-            deg_state = dp.evaluate(self.peer_mcc.authority_id, rs)
-            if self.monitor:
-                self.monitor.add_event("DEGRADATION_STATE", {
-                    "conn_id": self._conn_id, "state": deg_state,
-                })
-            if deg_state == "UNCERTAIN":
-                raise ConnectionError("Authority UNCERTAIN — connection refused")
-            authority = get_default_authority()
-            auth_pk = authority.public_key
-
-        # Extract TLS peer public key for step 7 verification (optional)
-        # Not used — key separation means TLS key (Ed25519) ≠ agent_pk (X25519)
-        # Binding is established via proof-of-possession signatures instead.
-        if not self.peer_mcc.verify(auth_pk, check_revoked=True):
+        # Verify peer's MCC. Unknown authorities are refused in strict mode;
+        # TOFU mode requires authority_pk in the bind frame and pins it.
+        if not self._verify_peer_mcc(self.peer_mcc, bind_req):
             if self.monitor:
                 self.monitor.add_event(MCC_VERIFICATION_FAILED, {
                     "conn_id": self._conn_id,
@@ -1153,6 +1250,20 @@ class ATPAgent:
                 "conn_id": self._conn_id,
             })
 
+        # TLS-ATP binding: verify TLS certificate's Ed25519 key matches MCC agent_sign_pk
+        tls_pk = self._get_tls_peer_pk(writer)
+        if tls_pk is not None and len(tls_pk) == 32:
+            peer_sign_pk = None
+            for leaf in self.peer_mcc.leaves:
+                if leaf.key == "agent_sign_pk":
+                    peer_sign_pk = leaf.value
+                    break
+            if peer_sign_pk is not None and tls_pk != peer_sign_pk:
+                raise ConnectionError(
+                    "TLS-ATP binding failed: TLS cert public key does not match MCC agent_sign_pk"
+                )
+            logger.info("TLS-ATP binding verified: TLS key matches MCC agent_sign_pk")
+
         # Check if peer wants key separation (dual_use check)
         peer_leaves = {l.key: l.value for l in self.peer_mcc.leaves}
 
@@ -1160,15 +1271,23 @@ class ATPAgent:
         self._my_nonce = os.urandom(16)
         peer_nonce = bind_req.get("nonce", b"")
 
-        # Send MCC_BIND_RESPONSE with our MCC, nonce_r, and signature
+        # Extract peer's ephemeral X25519 key for ECDHE forward secrecy
+        self._peer_eph_pk = bind_req.get("eph_pk", b"")
+        if not isinstance(self._peer_eph_pk, bytes) or len(self._peer_eph_pk) != 32:
+            self._peer_eph_pk = None
+            logger.warning("ECDHE: peer did not provide valid eph_pk — falling back to static ECDH")
+
+        # Send MCC_BIND_RESPONSE with our MCC, nonce_r, ephemeral key, and signature
         resp_header = build_header(0x41)
         resp_payload = {
             "header": resp_header,
             "mcc_cbor": self.mcc.to_cbor(),
+            "authority_pk": self._local_authority_pk(),
             "nonce": self._my_nonce,
+            "eph_pk": self._eph_pk,
             "signature": ed25519_sign(
                 self.identity.ed25519_sk,
-                peer_nonce + b"atp-bind-response",
+                peer_nonce + self._eph_pk + b"atp-bind-response",
             ),
         }
         await self._send_frame(resp_payload)
@@ -1180,7 +1299,8 @@ class ATPAgent:
 
         peer_sig = confirm.get("signature", b"")
         peer_sign_pk = peer_leaves.get("agent_sign_pk", b"")
-        if not ed25519_verify(peer_sign_pk, peer_sig, self._my_nonce + b"atp-bind-confirm"):
+        eph_confirm_msg = self._my_nonce + (self._eph_pk or b"") + b"atp-bind-confirm"
+        if not ed25519_verify(peer_sign_pk, peer_sig, eph_confirm_msg):
             raise ConnectionError("Bad bind-confirm signature")
         if self.monitor:
             self.monitor.add_event(BINDING_SUCCESS, {
@@ -1233,7 +1353,9 @@ class ATPAgent:
         bind_req = {
             "header": req_header,
             "mcc_cbor": self.mcc.to_cbor(),
+            "authority_pk": self._local_authority_pk(),
             "nonce": self._my_nonce,
+            "eph_pk": self._eph_pk,
         }
         await self._send_frame(bind_req)
 
@@ -1244,24 +1366,9 @@ class ATPAgent:
 
         self.peer_mcc = MCC.from_cbor(bind_resp["mcc_cbor"])
 
-        # Verify peer's MCC — sempre obbligatorio (demo_mode rimosso)
-        # Full ATP-Full: lookup authority in RootStore, verify signature, check revocation
-        from revocation import get_root_store, get_degradation
-        from authority import get_default_authority
-        rs = get_root_store()
-        dp = get_degradation()
-        auth_pk = rs.get_authority(self.peer_mcc.authority_id)
-        if auth_pk is None:
-            deg_state = dp.evaluate(self.peer_mcc.authority_id, rs)
-            if deg_state == "UNCERTAIN":
-                raise ConnectionError("Authority UNCERTAIN — connection refused")
-            authority = get_default_authority()
-            auth_pk = authority.public_key
-
-        # Extract TLS peer public key for step 7 verification (optional)
-        # Not used — key separation means TLS key (Ed25519) ≠ agent_pk (X25519)
-        # Binding is established via proof-of-possession signatures instead.
-        if not self.peer_mcc.verify(auth_pk, check_revoked=True):
+        # Verify peer's MCC. Unknown authorities are refused in strict mode;
+        # TOFU mode requires authority_pk in the bind frame and pins it.
+        if not self._verify_peer_mcc(self.peer_mcc, bind_resp):
             if self.monitor:
                 self.monitor.add_event(MCC_VERIFICATION_FAILED, {
                     "conn_id": self._conn_id,
@@ -1272,13 +1379,34 @@ class ATPAgent:
                 "conn_id": self._conn_id,
             })
 
+        # TLS-ATP binding: verify TLS certificate's Ed25519 key matches MCC agent_sign_pk
+        tls_pk = self._get_tls_peer_pk(writer)
+        if tls_pk is not None and len(tls_pk) == 32:
+            peer_sign_pk = None
+            for leaf in self.peer_mcc.leaves:
+                if leaf.key == "agent_sign_pk":
+                    peer_sign_pk = leaf.value
+                    break
+            if peer_sign_pk is not None and tls_pk != peer_sign_pk:
+                raise ConnectionError(
+                    "TLS-ATP binding failed: TLS cert public key does not match MCC agent_sign_pk"
+                )
+            logger.info("TLS-ATP binding verified: TLS key matches MCC agent_sign_pk")
+
         peer_leaves = {l.key: l.value for l in self.peer_mcc.leaves}
         peer_nonce = bind_resp.get("nonce", b"")
 
-        # Verify peer's signature on (my_nonce || "atp-bind-response")
+        # Extract peer's ephemeral X25519 key for ECDHE forward secrecy
+        self._peer_eph_pk = bind_resp.get("eph_pk", b"")
+        if not isinstance(self._peer_eph_pk, bytes) or len(self._peer_eph_pk) != 32:
+            self._peer_eph_pk = None
+            logger.warning("ECDHE: peer did not provide valid eph_pk — falling back to static ECDH")
+
+        # Verify peer's signature on (my_nonce || peer_eph_pk || "atp-bind-response")
         peer_sign_pk = peer_leaves.get("agent_sign_pk", b"")
         peer_sig = bind_resp.get("signature", b"")
-        if not ed25519_verify(peer_sign_pk, peer_sig, self._my_nonce + b"atp-bind-response"):
+        peer_sig_msg = self._my_nonce + (self._peer_eph_pk or b"") + b"atp-bind-response"
+        if not ed25519_verify(peer_sign_pk, peer_sig, peer_sig_msg):
             raise ConnectionError("Bad bind-response signature")
 
         # Send MCC_BIND_CONFIRM
@@ -1287,7 +1415,7 @@ class ATPAgent:
             "header": confirm_header,
             "signature": ed25519_sign(
                 self.identity.ed25519_sk,
-                peer_nonce + b"atp-bind-confirm",
+                peer_nonce + (self._eph_pk or b"") + b"atp-bind-confirm",
             ),
         }
         await self._send_frame(confirm)

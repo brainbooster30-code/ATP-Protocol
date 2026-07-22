@@ -1,5 +1,5 @@
 """
-ATP SDK v1.7 — SimpleATPClient
+ATP SDK v1.8 — SimpleATPClient
 
 A clean, high-level client that wraps ATPClient and ATPAgent.
 Handles TLS, MCC creation, handshake, and task sending automatically.
@@ -39,14 +39,18 @@ class SimpleATPClient:
         self,
         agent_name: str = "atp-sdk-client",
         monitor: Optional[Monitor] = None,
+        trust_bootstrap_mode: Optional[str] = None,
     ) -> None:
         """
         Args:
             agent_name: Human-readable name for this agent (goes into the MCC).
             monitor: Optional Monitor instance for protocol event logging.
+            trust_bootstrap_mode: None uses config (strict by default);
+                use "tofu" only for explicit trust-on-first-use bootstrap.
         """
         self.agent_name: str = agent_name
         self.monitor: Optional[Monitor] = monitor
+        self.trust_bootstrap_mode = trust_bootstrap_mode
 
         # Underlying protocol objects — created on connect()
         self._identity: Optional[AgentIdentity] = None
@@ -117,6 +121,7 @@ class SimpleATPClient:
             monitor=self.monitor,
             rate_limiter=self.rate_limiter,
             anti_replay=self.anti_replay,
+            trust_bootstrap_mode=self.trust_bootstrap_mode,
         )
 
         ok = await self._agent.perform_handshake(self._reader, self._writer)
@@ -319,8 +324,13 @@ class SyncATPClient:
         self,
         agent_name: str = "atp-sdk-client",
         monitor: Optional[Monitor] = None,
+        trust_bootstrap_mode: Optional[str] = None,
     ) -> None:
-        self._client = SimpleATPClient(agent_name=agent_name, monitor=monitor)
+        self._client = SimpleATPClient(
+            agent_name=agent_name,
+            monitor=monitor,
+            trust_bootstrap_mode=trust_bootstrap_mode,
+        )
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     def _get_loop(self) -> asyncio.AbstractEventLoop:

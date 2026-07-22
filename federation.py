@@ -92,7 +92,11 @@ class FederationRouter:
         return len(self._peers)
 
     async def add_or_update_peer(self, record: PeerRecord, discovered_by: str = ""):
-        """Add a new peer or update last_seen if already known."""
+        """Add a new peer or update last_seen if already known.
+
+        *discovered_by* is the peer_id that gossiped this peer to us.
+        When set, the new peer's hop_count is discoverer's hop_count + 1.
+        """
         async with self._peers_lock:
             if record.peer_id == self.node_id:
                 return  # don't add self
@@ -101,6 +105,13 @@ class FederationRouter:
                 existing.last_seen = time.time()
                 existing.host = record.host or existing.host
                 existing.port = record.port or existing.port
+                # Keep the shortest known hop distance
+                if discovered_by:
+                    discoverer = self._peers.get(discovered_by)
+                    via_hop = (discoverer.hop_count + 1) if discoverer else 1
+                    if via_hop < existing.hop_count:
+                        existing.hop_count = via_hop
+                        existing.discovered_by = discovered_by
             else:
                 if len(self._peers) >= FED_MAX_PEERS_TRACKED:
                     # Evict dead peer
@@ -109,10 +120,17 @@ class FederationRouter:
                         del self._peers[dead[0]]
                     else:
                         return  # table full
+                # Calculate hop distance: discoverer's hop + 1, or direct (1)
+                if discovered_by:
+                    discoverer = self._peers.get(discovered_by)
+                    record.hop_count = (discoverer.hop_count + 1) if discoverer else 1
+                else:
+                    record.hop_count = 1  # direct discovery
                 record.discovered_by = discovered_by
                 self._peers[record.peer_id] = record
-                logger.info("Federation: discovered peer %s at %s:%s",
-                            record.peer_id[:16], record.host, record.port)
+                logger.info("Federation: discovered peer %s at %s:%s (hop=%d)",
+                            record.peer_id[:16], record.host, record.port,
+                            record.hop_count)
 
     async def remove_peer(self, peer_id: str):
         async with self._peers_lock:

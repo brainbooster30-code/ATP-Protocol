@@ -1,5 +1,5 @@
 """
-ATP v1.7 — Event monitor with observer pattern + Qt signal bridge.
+ATP v1.8 — Event monitor with observer pattern + Qt signal bridge.
 """
 
 from __future__ import annotations

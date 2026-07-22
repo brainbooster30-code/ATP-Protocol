@@ -1,5 +1,5 @@
 """
-ATP v1.7 — Core module.
+ATP v1.8 — Core module.
 Cryptographic primitives, MCC (Merkle-Claim Card), and wire-format frames.
 """
 
@@ -30,7 +30,7 @@ try:
         return blake3.blake3(data).digest()
 except ImportError:
     raise ImportError(
-        "BLAKE3 is REQUIRED for ATP v1.7. Install: pip install blake3\n"
+        "BLAKE3 is REQUIRED for ATP v1.8. Install: pip install blake3\n"
         "No fallback is allowed — BLAKE2b is NOT interoperable with BLAKE3."
     )
 
@@ -150,8 +150,11 @@ class MCC:
         authority_sign_fn,               # callable: bytes → signature
     ) -> MCC:
         """Build an MCC: compute the Merkle root, then sign the commitment."""
+        critical_mask = _normalize_critical_mask(critical_mask)
         root_hash = _build_merkle_tree(leaves)
-        commitment = _commitment_cbor(root_hash, expiry_date, 1, authority_id, serial_number)
+        commitment = _commitment_cbor(
+            root_hash, expiry_date, 1, authority_id, serial_number, critical_mask,
+        )
         authority_sig = authority_sign_fn(commitment)
         return MCC(
             mcc_version=1,
@@ -206,7 +209,7 @@ class MCC:
         check_revoked: bool = False,
     ) -> bool:
         """
-        Full MCC verification per ATP v1.7 §Identity.
+        Full MCC verification per ATP v1.8 §Identity.
         Returns True if all checks pass, False otherwise.
 
         Steps:
@@ -230,7 +233,24 @@ class MCC:
             return False
 
         # Step 3 — critical_mask presence
-        leaf_keys = {l.key for l in self.leaves}
+        leaf_names = [leaf.key for leaf in self.leaves]
+        if len(leaf_names) != len(set(leaf_names)):
+            logger.warning("MCC verify: duplicate leaf key")
+            return False
+
+        leaf_map = {leaf.key: leaf.value for leaf in self.leaves}
+        expected_metadata = {
+            "expiry_date": str(self.expiry_date).encode(),
+            "authority_id": self.authority_id.encode(),
+            "mcc_version": str(self.mcc_version).encode(),
+            "serial_number": self.serial_number,
+        }
+        for key, expected_value in expected_metadata.items():
+            if key in leaf_map and leaf_map[key] != expected_value:
+                logger.warning("MCC verify: metadata leaf %r mismatch", key)
+                return False
+
+        leaf_keys = set(leaf_names)
         for required in self.critical_mask:
             if required not in leaf_keys:
                 logger.warning("MCC verify: missing critical key %r", required)
@@ -250,6 +270,7 @@ class MCC:
             self.mcc_version,
             self.authority_id,
             self.serial_number,
+            _normalize_critical_mask(self.critical_mask),
         )
         if not ed25519_verify(authority_pk, self.authority_sig, commitment):
             logger.warning("MCC verify: bad authority signature")
@@ -290,7 +311,7 @@ def _build_merkle_tree(leaves: list[MCCLeaf]) -> bytes:
     """Build full Merkle tree. If N is not a power of 2, pad with last leaf.
     
     Leaves are sorted by key first to ensure deterministic root hash
-    regardless of insertion order (ATP v1.7 §2.2).
+    regardless of insertion order (ATP v1.8 §2.2).
     """
     if not leaves:
         return b"\x00" * 32
@@ -325,8 +346,9 @@ def _commitment_cbor(
     mcc_version: int,
     authority_id: str,
     serial_number: bytes,
+    critical_mask: list[str],
 ) -> bytes:
-    """Canonical CBOR of the 5-field commitment that gets signed."""
+    """Canonical CBOR of the authority-signed MCC commitment."""
     return cbor2.dumps(
         {
             "root_hash": root_hash,
@@ -334,9 +356,15 @@ def _commitment_cbor(
             "mcc_version": mcc_version,
             "authority_id": authority_id,
             "serial_number": serial_number,
+            "critical_mask": _normalize_critical_mask(critical_mask),
         },
         canonical=True,
     )
+
+
+def _normalize_critical_mask(mask: list[str]) -> list[str]:
+    """Return a deterministic, duplicate-free critical mask for signing."""
+    return sorted(set(mask))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -140,7 +140,10 @@ async def connect_with_key_card(
 
     peer = import_key_card(card_path)
 
-    client = SimpleATPClient(f"hermes-{peer['agent_name']}")
+    client = SimpleATPClient(
+        f"hermes-{peer['agent_name']}",
+        trust_bootstrap_mode="tofu",
+    )
     ok = await client.connect(peer["host"], peer["port"])
     if not ok:
         logger.error("Connessione a %s:%s fallita", peer["host"], peer["port"])

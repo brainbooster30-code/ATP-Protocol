@@ -38,7 +38,7 @@ async def main():
     print("=" * 60)
     print(f"\n[ORCHESTRATOR] Proposal:\n  {PROPOSAL[:120]}...\n")
 
-    server = SimpleATPServer()
+    server = SimpleATPServer(trust_bootstrap_mode="tofu")
     await server.start(port=PORT)
 
     # ── Voting round ─────────────────────────────────────────────────────
@@ -46,7 +46,7 @@ async def main():
     votes = {}
 
     for name in agents:
-        voter = SimpleATPClient(name)
+        voter = SimpleATPClient(name, trust_bootstrap_mode="tofu")
         await voter.connect(port=PORT)
         print(f"[{name.upper()}] Connected. Voting...")
 

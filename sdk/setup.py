@@ -1,7 +1,7 @@
 """
-ATP SDK v1.7 — Easy-to-use Python SDK for the Agent Transfer Protocol.
+ATP SDK v1.8 — Easy-to-use Python SDK for the Agent Transport Protocol.
 
-This package wraps the ATP v1.7 protocol implementation into a clean,
+This package wraps the ATP v1.8 protocol implementation into a clean,
 high-level API for building federated AI-agent networks.
 
 pip install -e .
@@ -16,7 +16,7 @@ setup(
     name="atp-sdk",
     version="1.8",
     author="ATP SDK Contributors",
-    description="Easy-to-use Python SDK for the Agent Transfer Protocol v1.7",
+    description="Easy-to-use Python SDK for the Agent Transport Protocol v1.8",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/nousresearch/atp",
@@ -30,8 +30,10 @@ setup(
     ],
     extras_require={
         "dashboard": ["PySide6>=6.5", "matplotlib>=3.7"],
+        "quic": ["aioquic>=1.3"],
         "all": [
             "aiohttp>=3.8",
+            "aioquic>=1.3",
             "blake3>=0.3",
             "cbor2>=5.4",
             "cryptography>=41.0",

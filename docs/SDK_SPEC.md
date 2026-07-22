@@ -50,7 +50,7 @@ header = {
     "frame_id":    bstr .size 16,  # UUID v4 (random bytes)
     "task_id":     bstr .size 16,  # nil UUID for control frames
     "timestamp":   uint,       # Unix epoch milliseconds
-    "atp_version": tstr,       # "1.7"
+    "atp_version": tstr,       # "1.8"
 }
 ```
 
@@ -74,7 +74,7 @@ When serialized with canonical CBOR, the map keys are alphabetically sorted:
 ```
 {
     "header": {
-        "atp_version": "1.7",
+        "atp_version": "1.8",
         "frame_id": h'01234567012345670123456701234567',
         "frame_type": 1,
         "task_id": h'00000000000000000000000000000000',
@@ -96,7 +96,7 @@ A6                                      # map(6)
    68 68 65 61 64 65 72                 # key "header"
       A5                               # map(5)
          6B 61 74 70 5F 76 65 72 73 69 6F 6E # "atp_version"
-            63 31 2E 37                 # "1.7"
+            63 31 2E 38                 # "1.8"
          68 66 72 61 6D 65 5F 69 64    # "frame_id"
             50 01 23 45 67 01 23 45 67 01 23 45 67 01 23 45 67  # 16 bytes
          6A 66 72 61 6D 65 5F 74 79 70 65 # "frame_type"
@@ -166,7 +166,7 @@ Establish TCP connection, then TLS 1.3 with **mutual authentication**:
 ```
 {
     "header": Header,
-    "atp_versions": ["1.7"],
+    "atp_versions": ["1.8"],
     "max_batch_bytes": 1048576,
     "clock_skew_ms": 10000,
     "anti_replay_ttl_ms": 20000,
@@ -178,7 +178,7 @@ Establish TCP connection, then TLS 1.3 with **mutual authentication**:
 ```
 {
     "header": Header,
-    "selected_version": "1.7",
+    "selected_version": "1.8",
     "max_batch_bytes": 1048576,
     "clock_skew_ms": 10000,
     "anti_replay_ttl_ms": 20000,
@@ -194,6 +194,7 @@ Establish TCP connection, then TLS 1.3 with **mutual authentication**:
     "header": Header,
     "mcc_cbor": bstr,              # MCC serialized via MCC.to_cbor()
     "nonce": bstr .size 16,        # random nonce
+    "authority_pk": bstr .size 32,  # optional; required for explicit TOFU
 }
 ```
 
@@ -204,6 +205,7 @@ Establish TCP connection, then TLS 1.3 with **mutual authentication**:
     "mcc_cbor": bstr,              # server's MCC
     "nonce": bstr .size 16,        # server's random nonce
     "signature": bstr .size 64,    # Ed25519_sign(sk, client_nonce || "atp-bind-response")
+    "authority_pk": bstr .size 32,  # optional; required for explicit TOFU
 }
 ```
 
@@ -228,7 +230,7 @@ Bidirectional, same frame type:
     "capabilities": {
         "max_tasks": 10,
         "supports_deepseek": true,
-        "atp_version": "1.7",
+        "atp_version": "1.8",
     },
 }
 ```
@@ -267,6 +269,10 @@ MCCLeaf = {
 }
 ```
 
+Leaf keys must be unique. Metadata leaves with keys `expiry_date`,
+`authority_id`, `mcc_version`, or `serial_number` must match the corresponding
+top-level MCC fields exactly.
+
 ### 5.3 Leaf Hash Formula
 
 ```
@@ -298,6 +304,7 @@ commitment = CBOR_canonical({
     "mcc_version": mcc_version,
     "authority_id": authority_id,
     "serial_number": serial_number,
+    "critical_mask": sorted(unique(critical_mask)),
 })
 authority_sig = Ed25519_sign(authority_sk, commitment)
 ```
@@ -306,7 +313,8 @@ authority_sig = Ed25519_sign(authority_sk, commitment)
 
 1. `mcc_version == 1`
 2. `expiry_date > current_time()`
-3. All `critical_mask` keys present in leaves
+3. All `critical_mask` keys present in leaves; reject duplicate leaf keys or
+   metadata leaves inconsistent with top-level MCC fields
 4. Recompute `root_hash` from leaves (ignore any transmitted hash)
 5. Lookup `authority_pk` in RootStore by `authority_id`
 6. `Ed25519_verify(authority_pk, authority_sig, commitment_cbor)`
@@ -322,7 +330,7 @@ authority_sig = Ed25519_sign(authority_sk, commitment)
 ```
 shared_secret = X25519_ECDH(my_sk, peer_pk)
 pk1, pk2 = sorted([my_x25519_pk, peer_x25519_pk])
-kdf_input = "atp-v1.7-ecdh" || shared_secret || pk1 || pk2
+kdf_input = "atp-v1.8-ecdh" || shared_secret || pk1 || pk2
 session_key = BLAKE3(kdf_input)     # 32 bytes → AES-256-GCM key
 ```
 
@@ -371,23 +379,47 @@ h2 = BLAKE3(uint32_BE(fingerprint))
 i2 = i1 ^ ((h2[0:4] as uint32) & 0x3FF)
 ```
 
-### 7.2 RootStore Manifest Format
+### 7.2 RootStore Manifest Formats
 
 ```
-manifest = {
+rootstore_advertisement = {
+    "manifest_type": "rootstore-advertisement",
     "manifest_version": 1,
     "manifest_id": bstr .size 16,
     "manifest_nonce": bstr .size 16,     # anti-replay
     "manifest_ts": uint,                  # timestamp
     "rootstore_version": uint,           # monotonic counter
     "timestamp": uint,
-    "authority_id": tstr,                 # signing authority
+    "sender_name": tstr,
     "authorities": [                      # authority entries
         {"authority_id": tstr, "pk": bstr .size 32},
     ],
-    "signature": bstr .size 64,           # Ed25519 over all other fields
+    "signature": bstr .size 64,           # agent Ed25519 over all other fields
+}
+
+authority_chain = {
+    "manifest_type": "authority-chain",
+    "manifest_version": 1,
+    "manifest_id": bstr .size 16,
+    "manifest_nonce": bstr .size 16,
+    "manifest_ts": uint,
+    "rootstore_version": uint,
+    "timestamp": uint,
+    "authority_id": tstr,                 # already-trusted signing authority
+    "authorities": [
+        {"authority_id": tstr, "pk": bstr .size 32},
+    ],
+    "signature": bstr .size 64,           # authority Ed25519 over all other fields
 }
 ```
+
+`rootstore-advertisement` is not authoritative: receivers verify the agent
+signature and freshness but do not add unknown authorities. `authority-chain`
+is the only RootStore update that may add authorities, and only if
+`authority_id` is already trusted locally.
+SDK implementations must commit nonce caches, RootStore version tracking,
+added authorities, and chain entries only after schema validation, freshness,
+trusted signer lookup, and authority signature verification all succeed.
 
 ---
 
@@ -433,4 +465,5 @@ manifest = {
 - [ ] Anti-replay (frame_id sliding window, 20s)
 - [ ] Cuckoo filter for revocation
 - [ ] RootStore chain-of-manifests
-- [ ] Federation: PEER_DISCOVERY (signed), HEARTBEAT, TASK_FORWARD (signed)
+- [ ] Explicit trust bootstrap: strict default, optional TOFU with `authority_pk`
+- [ ] Federation: PEER_DISCOVERY (signed), HEARTBEAT, TASK_FORWARD (signed; unsigned rejected)

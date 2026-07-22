@@ -39,8 +39,10 @@ class ATPServer:
     def __init__(self, monitor: Optional[Monitor] = None,
                  conn_limiter: Optional[ConnectionLimiter] = None,
                  shutdown: Optional[GracefulShutdown] = None,
-                 health: Optional[HealthCheckServer] = None):
+                 health: Optional[HealthCheckServer] = None,
+                 trust_bootstrap_mode: Optional[str] = None):
         self.monitor = monitor
+        self.trust_bootstrap_mode = trust_bootstrap_mode
         self._server: Optional[asyncio.AbstractServer] = None
         self._gossip_task: Optional[asyncio.Task] = None
         self._gossip_server_task: Optional[asyncio.Task] = None
@@ -99,7 +101,7 @@ class ATPServer:
             self._shutdown.track(self._gossip_task)
 
         from config import GOSSIP_PORT
-        self._gossip_server = GossipServer(monitor=self.monitor)
+        self._gossip_server = GossipServer(monitor=self.monitor, gossip_proto=gossip)
         self._gossip_server_task = asyncio.create_task(
             self._gossip_server.start(host=host, port=GOSSIP_PORT)
         )
@@ -211,6 +213,7 @@ class ATPServer:
                 identity=self.identity, is_server=True, monitor=self.monitor,
                 task_handler=self._default_task_handler,
                 rate_limiter=RateLimiter(), anti_replay=AntiReplay(),
+                trust_bootstrap_mode=self.trust_bootstrap_mode,
             )
             agent._fed_router = getattr(self, "_fed_router", None)
             try:

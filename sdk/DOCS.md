@@ -50,13 +50,15 @@ Client asincrono. Gestisce automaticamente TLS, MCC, handshake ATP in 5 fasi.
 
 ```python
 SimpleATPClient(agent_name: str = "atp-sdk-client",
-                monitor: Optional[Monitor] = None)
+                monitor: Optional[Monitor] = None,
+                trust_bootstrap_mode: Optional[str] = None)
 ```
 
 | Parametro | Default | Descrizione |
 |-----------|---------|-------------|
 | `agent_name` | `"atp-sdk-client"` | Nome dell'agente (inserito nell'MCC) |
 | `monitor` | `None` | Monitor opzionale per eventi di protocollo |
+| `trust_bootstrap_mode` | `None` | `None` usa config (`strict`); `"tofu"` abilita pinning esplicito della authority del peer |
 
 ---
 
@@ -177,7 +179,8 @@ Server asincrono. Ascolta connessioni TLS, gestisce handshake e dispatch dei tas
 
 ```python
 SimpleATPServer(agent_name: str = "atp-sdk-server",
-                monitor: Optional[Monitor] = None)
+                monitor: Optional[Monitor] = None,
+                trust_bootstrap_mode: Optional[str] = None)
 ```
 
 ---
@@ -357,8 +360,8 @@ automaticamente:
 
 I frame PEER_DISCOVERY (0x60) e TASK_FORWARD (0x62) sono **firmati Ed25519**
 dal mittente. Il ricevente verifica la firma usando la chiave pubblica
-dell'MCC ottenuta durante l'handshake. Frame senza firma sono accettati
-durante la migrazione (backward compat).
+dell'MCC ottenuta durante l'handshake. Frame senza firma o con firma non
+valida sono ignorati.
 
 ### Connessioni federate
 
@@ -500,7 +503,7 @@ Il client invoca: `await client.send("translate", "Hello world")`
 
 # Protocollo
 
-ATP v1.7 — Agent Transfer Protocol. Protocollo crittografico per comunicazione
+ATP v1.8 — Agent Transport Protocol. Protocollo crittografico per comunicazione
 sicura e verificabile tra agenti AI.
 
 ### Fasi dell'handshake
@@ -525,12 +528,17 @@ sicura e verificabile tra agenti AI.
 La chiave viene risolta automaticamente:
 1. `os.environ["DEEPSEEK_API_KEY"]`
 2. Registry Windows `HKCU\Environment` (per git-bash/MSYS2)
-3. Se assente: risposta mock `[ATP v1.7 Mock Response]`
+3. Se assente: risposta mock `[ATP v1.8 Mock Response]`
 
 ### Verifica identità
 
 L'SDK verifica sempre l'MCC del peer in 8 step: versione, scadenza, foglie critiche,
 root hash, firma dell'autorità, chiave separata, revoca. Nessuna modalità demo bypassabile.
+
+Il bootstrap è `strict` di default. Per demo controllate su macchine diverse puoi
+usare `trust_bootstrap_mode="tofu"` su client e server; in produzione preferisci
+authority pre-provisionate nel RootStore o manifest `authority-chain` firmati da
+una authority già fidata.
 
 ### Modalità produzione
 

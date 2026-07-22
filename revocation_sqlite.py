@@ -22,7 +22,7 @@ import sqlite3
 import threading
 from typing import Optional
 
-from atp_core import blake3_hash, ed25519_verify
+from atp_core import blake3_hash
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +54,9 @@ class RootStoreSQLite:
 
     def __init__(self, path: Optional[str] = None):
         if path is None:
-            path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), "root_store.db"
+            from config import ROOT_STORE_PATH
+            path = ROOT_STORE_PATH or os.path.join(
+                os.path.expanduser("~"), ".atp", "root_store.db"
             )
         self._path = os.path.expanduser(path)
         self._lock = threading.Lock()
@@ -164,108 +165,91 @@ class RootStoreSQLite:
     # ── chain-of-manifests ──────────────────────────────────────────────
 
     def chain_add(self, signed_manifest: bytes) -> bool:
-        """Verify and append a signed manifest. Returns True if accepted."""
-        try:
-            import cbor2 as _cbor2
-            manifest = _cbor2.loads(signed_manifest)
-            sig = manifest.pop("signature", b"")
-            if len(sig) != 64:
-                logger.warning("RootStoreSQLite: invalid signature length")
-                return False
-            payload = _cbor2.dumps(manifest, canonical=True)
+        """Verify and append a signed manifest. Returns True if accepted.
 
-            # Anti-replay: nonce + timestamp
-            manifest_nonce = manifest.get("manifest_nonce", b"")
-            manifest_ts = manifest.get("manifest_ts", 0)
-            now = int(time.time())
-            if manifest_ts and abs(now - manifest_ts) > 300:
-                logger.warning("RootStoreSQLite: stale manifest")
-                return False
+        Delegates CBOR parsing and signature verification to
+        _verify_chain_manifest_cbor (shared with RootStore).
+        """
+        from revocation import _verify_chain_manifest_cbor
+        manifest = _verify_chain_manifest_cbor(
+            signed_manifest,
+            get_authority_fn=lambda aid: self.get_authority(aid),
+        )
+        if manifest is None:
+            return False
+
+        now = int(time.time())
+        manifest_nonce = manifest.get("manifest_nonce", b"")
+        manifest_version = manifest.get("rootstore_version", 0)
+        authorities = manifest.get("authorities", [])
+        signer_id = manifest.get("authority_id", "")
+        conn = self._get_conn()
+
+        with self._lock:
+            # Anti-replay: nonce uniqueness
             if manifest_nonce:
                 nonce_hex = manifest_nonce.hex()
-                conn = self._get_conn()
-                with self._lock:
-                    existing = conn.execute(
-                        "SELECT 1 FROM seen_nonces WHERE nonce_hex = ?",
-                        (nonce_hex,),
-                    ).fetchone()
-                    if existing:
-                        logger.warning("RootStoreSQLite: duplicate nonce — replay?")
-                        return False
+                existing = conn.execute(
+                    "SELECT 1 FROM seen_nonces WHERE nonce_hex = ?",
+                    (nonce_hex,),
+                ).fetchone()
+                if existing:
+                    logger.warning("RootStoreSQLite: duplicate nonce - replay?")
+                    return False
+
+            # Version check: reject stale manifests
+            latest = 0
+            if manifest_version:
+                row = conn.execute(
+                    "SELECT rootstore_version FROM version_tracking WHERE authority_id = ?",
+                    (signer_id,),
+                ).fetchone()
+                latest = row["rootstore_version"] if row else 0
+                if manifest_version < latest:
+                    logger.warning(
+                        "RootStoreSQLite: stale version %d < %d for %s",
+                        manifest_version, latest, signer_id,
+                    )
+                    return False
+
+            # Commit within a single transaction
+            with conn:
+                if manifest_version and manifest_version > latest:
+                    conn.execute(
+                        """INSERT OR REPLACE INTO version_tracking
+                           (authority_id, rootstore_version) VALUES (?, ?)""",
+                        (signer_id, manifest_version),
+                    )
+                if manifest_nonce:
                     conn.execute(
                         "INSERT OR REPLACE INTO seen_nonces (nonce_hex, seen_at) VALUES (?, ?)",
-                        (nonce_hex, now),
+                        (manifest_nonce.hex(), now),
                     )
-                    # Prune old nonces
                     conn.execute(
                         "DELETE FROM seen_nonces WHERE seen_at < ?",
                         (now - 3600,),
                     )
-
-            # Find signing authority
-            signer_id = manifest.get("authority_id", "")
-            signer_pk = self.get_authority(signer_id)
-            if signer_pk is None:
-                # Bootstrap: look in manifest's authorities list
-                for entry in manifest.get("authorities", []):
-                    if entry.get("authority_id") == signer_id:
-                        signer_pk = entry["pk"]
-                        break
-            if signer_pk is None:
-                logger.warning("RootStoreSQLite: signing authority %s not found", signer_id)
-                return False
-
-            # Verify signature
-            if not ed25519_verify(signer_pk, sig, payload):
-                logger.warning("RootStoreSQLite: bad signature from %s", signer_id)
-                return False
-
-            # Version tracking (allow equal — anti-replay via nonce above)
-            manifest_version = manifest.get("rootstore_version", 0)
-            if manifest_version:
-                conn = self._get_conn()
-                with self._lock:
-                    row = conn.execute(
-                        "SELECT rootstore_version FROM version_tracking WHERE authority_id = ?",
-                        (signer_id,),
-                    ).fetchone()
-                    latest = row["rootstore_version"] if row else 0
-                    if manifest_version < latest:
-                        logger.warning(
-                            "RootStoreSQLite: stale version %d < %d for %s",
-                            manifest_version, latest, signer_id,
-                        )
-                        return False
-                    if manifest_version > latest:
-                        conn.execute(
-                            """INSERT OR REPLACE INTO version_tracking
-                               (authority_id, rootstore_version) VALUES (?, ?)""",
-                            (signer_id, manifest_version),
-                        )
-
-            # Add new authorities from manifest
-            for entry in manifest.get("authorities", []):
-                self.add_authority(
-                    entry["authority_id"], entry["pk"],
-                )
-
-            # Append to chain
-            conn = self._get_conn()
-            with self._lock:
+                for entry in authorities:
+                    conn.execute(
+                        """INSERT OR REPLACE INTO authorities
+                           (authority_id, pk_hex, added, expires)
+                           VALUES (?, ?, ?, ?)""",
+                        (
+                            entry["authority_id"],
+                            entry["pk"].hex(),
+                            now,
+                            now + 86400 * 365,
+                        ),
+                    )
                 conn.execute(
                     "INSERT INTO chain (manifest_hex, added) VALUES (?, ?)",
                     (signed_manifest.hex(), now),
                 )
-                conn.commit()
-            logger.info(
-                "RootStoreSQLite: chain manifest from %s (%d authorities)",
-                signer_id, len(manifest.get("authorities", [])),
-            )
-            return True
-
-        except Exception as exc:
-            logger.warning("RootStoreSQLite: chain_add error — %s", exc)
-            return False
+        logger.info(
+            "RootStoreSQLite: chain manifest from %s (%d authorities)",
+            signer_id, len(authorities),
+        )
+        return True
 
     # ── manifest export ─────────────────────────────────────────────────
 

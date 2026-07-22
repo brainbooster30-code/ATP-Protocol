@@ -39,7 +39,7 @@ async def main():
     print("1. Avvio 3 server ATP con federation...")
     for i, (port, name, hc_port) in enumerate(zip(PORTS, NAMES, HC_PORTS)):
         config.GOSSIP_PORT = 18960 + i  # gossip ports isolate
-        srv = ATPServer()
+        srv = ATPServer(trust_bootstrap_mode="tofu")
         srv.identity.agent_name = f"node-{name}"
         servers.append(srv)
         tasks.append(asyncio.create_task(
@@ -55,7 +55,7 @@ async def main():
     print("2. Connessioni federate + peer discovery...")
     clients = []
     for src, dst in [(0, 1), (1, 2)]:
-        cli = ATPClient()
+        cli = ATPClient(trust_bootstrap_mode="tofu")
         ok = await cli.connect("127.0.0.1", PORTS[dst])
         if ok:
             # Task normale per triggerare RootStore push
@@ -98,7 +98,7 @@ async def main():
     # Echo test su tutti i nodi
     print("4. Echo test su tutti i nodi (connettività):")
     for i, name in enumerate(NAMES):
-        cli = ATPClient()
+        cli = ATPClient(trust_bootstrap_mode="tofu")
         r = {}
         ok = await cli.connect("127.0.0.1", PORTS[i])
         if ok:

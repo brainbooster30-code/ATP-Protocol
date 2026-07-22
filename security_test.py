@@ -1,5 +1,5 @@
 """"
-ATP v1.7 — Security Test Suite.
+ATP v1.8 - Security Test Suite.
 Verifica le proprietà di sicurezza del protocollo.
 
 Esegue test su:
@@ -18,6 +18,12 @@ Run:  python security_test.py
 """
 import sys, os, struct, time, json, cbor2, asyncio
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
+if __name__ != "__main__":
+    import pytest
+    pytest.skip("script-style security test; run with python security_test.py", allow_module_level=True)
 
 from atp_core import *
 from authority import *
@@ -30,9 +36,9 @@ errors = []
 
 def test(name, cond, detail=""):
     if cond:
-        print(f"  ✅ {name}")
+        print(f"  [OK] {name}")
     else:
-        print(f"  ❌ {name}  {detail}")
+        print(f"  [FAIL] {name}  {detail}")
         errors.append(name)
 
 def section(n, title):
@@ -44,7 +50,7 @@ def section(n, title):
 #  1. CRYPTOGRAPHIC PRIMITIVES
 # ═══════════════════════════════════════════════════════════════════════════════
 
-section(1, "CRYPTOGRAFIA — Ed25519 / X25519")
+section(1, "CRYPTOGRAFIA - Ed25519 / X25519")
 
 sk, pk = generate_ed25519_keypair()
 x_sk, x_pk = generate_x25519_keypair()
@@ -54,7 +60,7 @@ test("Ed25519 secret key 32 bytes", len(sk) == 32)
 test("Ed25519 public key 32 bytes", len(pk) == 32)
 test("X25519 secret key 32 bytes", len(x_sk) == 32)
 test("X25519 public key 32 bytes", len(x_pk) == 32)
-test("Ed25519 ≠ X25519 (tipi diversi)", type(sk) != type(x_sk) or sk != x_sk)
+test("Ed25519 != X25519 (tipi diversi)", type(sk) != type(x_sk) or sk != x_sk)
 
 # 1.2 Sign/verify
 sig = ed25519_sign(sk, b"test-message")
@@ -76,7 +82,7 @@ test("BLAKE3 preimage: output != input", h1 != b"hello")
 #  2. MCC SECURITY
 # ═══════════════════════════════════════════════════════════════════════════════
 
-section(2, "MCC — FORGERY & TAMPER RESISTANCE")
+section(2, "MCC - FORGERY & TAMPER RESISTANCE")
 
 auth = get_default_authority()
 
@@ -132,7 +138,7 @@ fake_root = MCC(
 )
 test("Wrong root hash rejected", not fake_root.verify(auth.public_key))
 
-# 2.8 Tampered leaf value (replace agent_pk) — manually constructed to keep original sig
+# 2.8 Tampered leaf value (replace agent_pk) - manually constructed to keep original sig
 tampered_mcc = MCC(
     mcc_version=1, serial_number=valid_mcc.serial_number,
     root_hash=valid_mcc.root_hash, authority_id=valid_mcc.authority_id,
@@ -150,10 +156,10 @@ test("Tampered leaf detected by root hash mismatch",
 #  3. KEY SEPARATION (ATP-Full §6)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-section(3, "KEY SEPARATION — agent_pk ≠ agent_sign_pk")
+section(3, "KEY SEPARATION - agent_pk != agent_sign_pk")
 
 # 3.1 Normal MCC passes
-test("Normal MCC: agent_pk≠agent_sign_pk OK",
+test("Normal MCC: agent_pk!=agent_sign_pk OK",
      valid_mcc.verify(auth.public_key))
 
 # 3.2 MCC with same key for both fields
@@ -166,7 +172,7 @@ test("MCC with agent_pk==agent_sign_pk REJECTED",
 
 # 3.3 AgentIdentity guarantees separation
 id1 = AgentIdentity("test-agent")
-test("AgentIdentity: X25519 ≠ Ed25519", id1.x25519_pk != id1.ed25519_pk)
+test("AgentIdentity: X25519 != Ed25519", id1.x25519_pk != id1.ed25519_pk)
 test("AgentIdentity: keys are 32 bytes",
      len(id1.x25519_pk) == 32 and len(id1.ed25519_pk) == 32)
 
@@ -174,24 +180,38 @@ test("AgentIdentity: keys are 32 bytes",
 #  4. REPLAY ATTACK PREVENTION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-section(4, "REPLAY ATTACK PREVENTION — Nonce + AntiReplay")
+section(4, "REPLAY ATTACK PREVENTION - Nonce + AntiReplay")
 
 # 4.1 AntiReplay filter
-ar = AntiReplay(window_ms=5000, max_ids=100)
-frame_id = os.urandom(16)
-test("New frame_id accepted", ar.is_new(frame_id, 1000))
-test("Duplicate frame_id rejected", not ar.is_new(frame_id, 1000))
-test("Different frame_id accepted", ar.is_new(os.urandom(16), 1000))
+async def _run_replay_and_rate_checks():
+    ar = AntiReplay(window_ms=5000, max_ids=100)
+    frame_id = os.urandom(16)
+    new_ok = await ar.is_new(frame_id, 1000)
+    dup_rejected = not await ar.is_new(frame_id, 1000)
+    different_ok = await ar.is_new(os.urandom(16), 1000)
+    old_id = os.urandom(16)
+    old_ok = await ar.is_new(old_id, 100000)
+    rl = RateLimiter(max_rps=10)
+    allowed = 0
+    for _ in range(10):
+        if await rl.allow():
+            allowed += 1
+    eleventh_blocked = not await rl.allow()
+    return new_ok, dup_rejected, different_ok, old_ok, allowed, eleventh_blocked
 
-# 4.2 TTL expiry — frame_id outside window is accepted again
-old_id = os.urandom(16)
-test("Old frame accepted (TTL expired)", ar.is_new(old_id, 100000))
+new_ok, dup_rejected, different_ok, old_ok, allowed, eleventh_blocked = asyncio.run(
+    _run_replay_and_rate_checks()
+)
+test("New frame_id accepted", new_ok)
+test("Duplicate frame_id rejected", dup_rejected)
+test("Different frame_id accepted", different_ok)
+
+# 4.2 TTL expiry - frame_id outside window is accepted again
+test("Old frame accepted (TTL expired)", old_ok)
 
 # 4.3 RateLimiter
-rl = RateLimiter(max_rps=10)
-allowed = sum(1 for _ in range(10) if rl.allow())
 test("RateLimiter: 10 requests within limit", allowed == 10)
-test("RateLimiter: 11th blocked", not rl.allow())
+test("RateLimiter: 11th blocked", eleventh_blocked)
 
 # 4.4 Nonce uniqueness in handshake
 nonce1 = os.urandom(16)
@@ -203,7 +223,7 @@ test("Nonce 16 bytes", len(nonce1) == 16)
 #  5. PROOF-OF-POSSESSION (Handshake Binding)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-section(5, "PROOF-OF-POSSESSION — Handshake Binding")
+section(5, "PROOF-OF-POSSESSION - Handshake Binding")
 
 # 5.1 Correct PoP strings
 sk_i, pk_i = generate_ed25519_keypair()
@@ -219,8 +239,8 @@ test("Responder signature verifies",
 test("Initiator signature verifies",
      ed25519_verify(pk_i, conf_sig, nonce_r + b"atp-bind-confirm"))
 
-# 5.2 Wrong context string → fail
-test("Wrong context (response→confirm) fails",
+# 5.2 Wrong context string -> fail
+test("Wrong context (response->confirm) fails",
      not ed25519_verify(pk_r, resp_sig, nonce_i + b"atp-bind-confirm"))
 test("Wrong nonce fails",
      not ed25519_verify(pk_r, resp_sig, os.urandom(16) + b"atp-bind-response"))
@@ -235,7 +255,7 @@ test("Wrong identity key fails signature",
 #  6. REVOCATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-section(6, "REVOCATION — CuckooFilter + RootStore")
+section(6, "REVOCATION - CuckooFilter + RootStore")
 
 # 6.1 CuckooFilter
 cf = CuckooFilter(buckets=256, slots=4)
@@ -280,9 +300,9 @@ test("Authority with negative TTL expires immediately",
 dp = DegradationPolicy(active=True)
 rs2 = RootStore(path=_tf.mktemp(suffix='.json'))
 rs2.add_authority("live-ca", b"pk" * 16, ttl_seconds=86400*365)
-test("Active CA → CONFIRMED", dp.evaluate("live-ca", rs2) == "CONFIRMED")
-test("Unknown CA → UNCERTAIN", dp.evaluate("unknown", rs2) == "UNCERTAIN")
-test("Inactive policy → always CONFIRMED",
+test("Active CA -> CONFIRMED", dp.evaluate("live-ca", rs2) == "CONFIRMED")
+test("Unknown CA -> UNCERTAIN", dp.evaluate("unknown", rs2) == "UNCERTAIN")
+test("Inactive policy -> always CONFIRMED",
      DegradationPolicy(active=False).evaluate("unknown", rs2) == "CONFIRMED")
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -321,7 +341,7 @@ test("TASK_ERROR(0x0C) includes server_time_ms",
 #  8. FRAME INTEGRITY
 # ═══════════════════════════════════════════════════════════════════════════════
 
-section(8, "FRAME INTEGRITY — Wire Format")
+section(8, "FRAME INTEGRITY - Wire Format")
 
 # 8.1 Length prefix prevents buffer overflow
 enc = encode_frame({"header": build_header(0x01)})
@@ -353,29 +373,29 @@ test("Frame type 0x50 = CAPABILITY_EXCHANGE", FRAME_TYPES[0x50] == "CAPABILITY_E
 #  9. ERROR CODE DISPOSITIONS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-section(9, "ERROR CODE DISPOSITIONS — Fail-Closed Analysis")
+section(9, "ERROR CODE DISPOSITIONS - Fail-Closed Analysis")
 
 # Verify critical errors close connection
 close_errors = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
 for code in close_errors:
     name, disp = ERROR_CODES[code]
-    test(f"  {name} (0x{code:02X}) → {disp}", disp == "close")
+    test(f"  {name} (0x{code:02X}) -> {disp}", disp == "close")
 
 # Non-critical errors close only the stream
 stream_errors = [0x09, 0x0A, 0x0B, 0x0C, 0x0E, 0x0F]
 for code in stream_errors:
     name, disp = ERROR_CODES[code]
-    test(f"  {name} (0x{code:02X}) → {disp}", disp == "close_stream")
+    test(f"  {name} (0x{code:02X}) -> {disp}", disp == "close_stream")
 
 # Rate limiting is recoverable
-test(f"  ERR_RATE_LIMITED (0x0D) → recoverable",
+test(f"  ERR_RATE_LIMITED (0x0D) -> recoverable",
      ERROR_CODES[0x0D][1] == "recoverable")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  10. CALLBACK: MCC → CBOR → WIRE → CBOR → MCC (full round-trip)
+#  10. CALLBACK: MCC -> CBOR -> WIRE -> CBOR -> MCC (full round-trip)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-section(10, "FULL ROUND-TRIP — MCC → CBOR → Wire → CBOR → MCC")
+section(10, "FULL ROUND-TRIP - MCC -> CBOR -> Wire -> CBOR -> MCC")
 
 original = auth.sign_mcc(leaves=[leaf1, leaf2])
 cbor_data = original.to_cbor()
@@ -399,22 +419,22 @@ print(f"\n{'='*60}")
 print(f"  SECURITY TEST SUMMARY")
 print(f"{'='*60}")
 if errors:
-    print(f"\n  ❌❌❌ {len(errors)} TEST(S) FALLITI:")
+    print(f"\n  [FAIL] {len(errors)} TEST(S) FALLITI:")
     for e in errors:
         print(f"     - {e}")
     sys.exit(1)
 else:
-    print(f"\n  🎯  ALL SECURITY TESTS PASSED")
-    print(f"\n  Proprietà verificate:")
-    print(f"   ✓ Ed25519/X25519 cryptographic primitives")
-    print(f"   ✓ MCC forgery resistance (8 attack vectors)")
-    print(f"   ✓ Key separation enforcement")
-    print(f"   ✓ Replay attack prevention (nonce + anti-replay)")
-    print(f"   ✓ Rate limiting (sliding window)")
-    print(f"   ✓ Proof-of-possession binding (3 attack vectors)")
-    print(f"   ✓ Revocation (CuckooFilter + RootStore)")
-    print(f"   ✓ Clock skew protection (TASK_ERROR fallback)")
-    print(f"   ✓ Frame integrity (CBOR canonical, bounds, types)")
-    print(f"   ✓ Fail-closed error dispositions (15 codes)")
-    print(f"   ✓ Full round-trip: MCC → CBOR → wire → CBOR → MCC")
-    print(f"  ✅✅✅")
+    print(f"\n  [OK] ALL SECURITY TESTS PASSED")
+    print(f"\n  Proprieta verificate:")
+    print(f"   - Ed25519/X25519 cryptographic primitives")
+    print(f"   - MCC forgery resistance (8 attack vectors)")
+    print(f"   - Key separation enforcement")
+    print(f"   - Replay attack prevention (nonce + anti-replay)")
+    print(f"   - Rate limiting (sliding window)")
+    print(f"   - Proof-of-possession binding (3 attack vectors)")
+    print(f"   - Revocation (CuckooFilter + RootStore)")
+    print(f"   - Clock skew protection (TASK_ERROR fallback)")
+    print(f"   - Frame integrity (CBOR canonical, bounds, types)")
+    print(f"   - Fail-closed error dispositions (15 codes)")
+    print(f"   - Full round-trip: MCC -> CBOR -> wire -> CBOR -> MCC")
+    print(f"  [OK]")

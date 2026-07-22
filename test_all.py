@@ -1,5 +1,5 @@
 """
-ATP v1.7 — pytest test suite.
+ATP v1.8 — pytest test suite.
 Run:  python -m pytest test_all.py -v --tb=short
 
 Each test function is isolated (see conftest.py _reset_global_state).
@@ -144,6 +144,18 @@ class TestMCC:
         mcc = auth.sign_mcc(leaves=leaves)
         assert mcc.verify(auth.public_key)
 
+    def test_critical_mask_is_signed(self, default_authority, isolated_root_store):
+        from atp_core import MCCLeaf
+        auth = default_authority
+        leaves = [
+            MCCLeaf(key='agent_pk', value=b'\x01'*32, salt=os.urandom(16)),
+            MCCLeaf(key='agent_sign_pk', value=b'\x02'*32, salt=os.urandom(16)),
+        ]
+        mcc = auth.sign_mcc(leaves=leaves)
+        assert mcc.verify(auth.public_key)
+        mcc.critical_mask = ['agent_pk']
+        assert not mcc.verify(auth.public_key)
+
     def test_verify_wrong_authority_fails(self, default_authority, isolated_root_store):
         from atp_core import MCCLeaf
         auth = default_authority
@@ -173,6 +185,50 @@ class TestMCC:
             MCCLeaf(key='agent_sign_pk', value=b'\x02'*32, salt=os.urandom(16)),
         ]
         mcc = auth.sign_mcc(leaves=leaves, expiry_date=100)
+        assert not mcc.verify(auth.public_key)
+
+    def test_authority_normalizes_metadata_leaves(self, default_authority, isolated_root_store):
+        from atp_core import MCCLeaf
+        auth = default_authority
+        serial = b'\x33' * 16
+        expiry = int(time.time()) + 3600
+        leaves = [
+            MCCLeaf(key='agent_pk', value=b'\x01'*32, salt=os.urandom(16)),
+            MCCLeaf(key='agent_sign_pk', value=b'\x02'*32, salt=os.urandom(16)),
+            MCCLeaf(key='authority_id', value=b'fake-ca', salt=os.urandom(16)),
+            MCCLeaf(key='serial_number', value=b'wrong-serial', salt=os.urandom(16)),
+        ]
+        mcc = auth.sign_mcc(leaves=leaves, serial_number=serial, expiry_date=expiry)
+        leaf_map = {leaf.key: leaf.value for leaf in mcc.leaves}
+        assert leaf_map['authority_id'] == auth.authority_id.encode()
+        assert leaf_map['serial_number'] == serial
+        assert leaf_map['expiry_date'] == str(expiry).encode()
+        assert mcc.verify(auth.public_key)
+
+    def test_metadata_leaf_mismatch_rejected(self, default_authority, isolated_root_store):
+        from atp_core import MCC, MCCLeaf, ed25519_sign
+        auth = default_authority
+        serial = b'\x44' * 16
+        expiry = int(time.time()) + 3600
+        leaves = [
+            MCCLeaf(key='agent_pk', value=b'\x01'*32, salt=os.urandom(16)),
+            MCCLeaf(key='agent_sign_pk', value=b'\x02'*32, salt=os.urandom(16)),
+            MCCLeaf(key='expiry_date', value=str(expiry).encode(), salt=os.urandom(16)),
+            MCCLeaf(key='authority_id', value=b'fake-ca', salt=os.urandom(16)),
+            MCCLeaf(key='mcc_version', value=b'1', salt=os.urandom(16)),
+            MCCLeaf(key='serial_number', value=serial, salt=os.urandom(16)),
+        ]
+        mcc = MCC.create(
+            leaves=leaves,
+            critical_mask=[
+                'agent_pk', 'agent_sign_pk', 'expiry_date',
+                'authority_id', 'mcc_version', 'serial_number',
+            ],
+            serial_number=serial,
+            authority_id=auth.authority_id,
+            expiry_date=expiry,
+            authority_sign_fn=lambda data: ed25519_sign(auth._sign_sk, data),
+        )
         assert not mcc.verify(auth.public_key)
 
 
@@ -360,6 +416,79 @@ class TestRootStore:
         try: os.unlink(tmp)
         except OSError: pass
 
+    def test_chain_manifest_bad_signature_does_not_poison_version(self):
+        from revocation import RootStore
+        import cbor2 as _cbor2
+        from atp_core import generate_ed25519_keypair, ed25519_sign
+        tmp = tempfile.mktemp(suffix='.json')
+        rs = RootStore(path=tmp)
+        chain_sk, chain_pk = generate_ed25519_keypair()
+        child_pk = b'\x03' * 32
+        rs.add_authority('chain-ca', chain_pk)
+
+        def make_manifest(version, nonce, valid_signature):
+            manifest = {
+                "manifest_version": 1,
+                "manifest_id": os.urandom(16),
+                "prev_manifest_id": b'\x00'*16,
+                "timestamp": int(time.time()),
+                "authority_id": "chain-ca",
+                "authority_pk": chain_pk,
+                "quorum_threshold": 1,
+                "manifest_ts": int(time.time()),
+                "manifest_nonce": nonce,
+                "rootstore_version": version,
+                "authorities": [{"authority_id": "child-ca", "pk": child_pk}],
+            }
+            payload = _cbor2.dumps(manifest, canonical=True)
+            manifest["signature"] = (
+                ed25519_sign(chain_sk, payload) if valid_signature else b'x' * 64
+            )
+            return _cbor2.dumps(manifest, canonical=True)
+
+        assert not rs.chain_add(make_manifest(999, b'\x01'*16, False))
+        assert rs.chain_add(make_manifest(2, b'\x02'*16, True))
+        assert rs.get_authority('child-ca') == child_pk
+        try: os.unlink(tmp)
+        except OSError: pass
+
+    def test_sqlite_chain_manifest_bad_signature_does_not_poison_version(self):
+        from revocation_sqlite import RootStoreSQLite
+        import cbor2 as _cbor2
+        from atp_core import generate_ed25519_keypair, ed25519_sign
+        tmp = tempfile.mktemp(suffix='.db')
+        rs = RootStoreSQLite(path=tmp)
+        chain_sk, chain_pk = generate_ed25519_keypair()
+        child_pk = b'\x04' * 32
+        rs.add_authority('chain-ca', chain_pk)
+
+        def make_manifest(version, nonce, valid_signature):
+            manifest = {
+                "manifest_version": 1,
+                "manifest_id": os.urandom(16),
+                "prev_manifest_id": b'\x00'*16,
+                "timestamp": int(time.time()),
+                "authority_id": "chain-ca",
+                "authority_pk": chain_pk,
+                "quorum_threshold": 1,
+                "manifest_ts": int(time.time()),
+                "manifest_nonce": nonce,
+                "rootstore_version": version,
+                "authorities": [{"authority_id": "child-ca", "pk": child_pk}],
+            }
+            payload = _cbor2.dumps(manifest, canonical=True)
+            manifest["signature"] = (
+                ed25519_sign(chain_sk, payload) if valid_signature else b'x' * 64
+            )
+            return _cbor2.dumps(manifest, canonical=True)
+
+        assert not rs.chain_add(make_manifest(999, b'\x03'*16, False))
+        assert rs.chain_add(make_manifest(2, b'\x04'*16, True))
+        assert rs.get_authority('child-ca') == child_pk
+        for suffix in ("", "-wal", "-shm"):
+            try: os.unlink(tmp + suffix)
+            except OSError: pass
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  12. DEGRADATION POLICY
@@ -425,6 +554,20 @@ class TestAuthorityStore:
         pk_rs = get_root_store().get_authority(auth.authority_id)
         assert pk_rs == auth.public_key
 
+    def test_default_authority_id_is_key_derived(self, tmp_path, monkeypatch):
+        from authority import Authority
+
+        monkeypatch.setenv("ATP_AUTHORITY_DIR", str(tmp_path / "machine-a"))
+        a1 = Authority()
+        a2 = Authority()
+
+        monkeypatch.setenv("ATP_AUTHORITY_DIR", str(tmp_path / "machine-b"))
+        b1 = Authority()
+
+        assert a1.authority_id.startswith("atp-local-")
+        assert a1.authority_id == a2.authority_id
+        assert a1.authority_id != b1.authority_id
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  16. HANDSHAKE RATE LIMITER
@@ -442,6 +585,25 @@ class TestHandshakeRateLimiter:
         hrl.reset('1.2.3.4')
         assert await hrl.allow('1.2.3.4')
         assert await hrl.allow('5.6.7.8')
+
+
+class TestReplayAndRateLimiter:
+    @pytest.mark.asyncio
+    async def test_anti_replay_rejects_duplicate(self):
+        from config import AntiReplay
+        ar = AntiReplay(window_ms=5000, max_ids=100)
+        frame_id = os.urandom(16)
+        assert await ar.is_new(frame_id, 1000)
+        assert not await ar.is_new(frame_id, 1000)
+        assert await ar.is_new(os.urandom(16), 1000)
+
+    @pytest.mark.asyncio
+    async def test_rate_limiter_blocks_after_window_capacity(self):
+        from config import RateLimiter
+        rl = RateLimiter(max_rps=10)
+        for _ in range(10):
+            assert await rl.allow()
+        assert not await rl.allow()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

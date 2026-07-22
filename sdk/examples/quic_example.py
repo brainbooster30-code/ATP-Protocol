@@ -16,12 +16,6 @@ Output atteso:
 import asyncio, sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-# Clean any stale RootStore before starting
-try:
-    os.unlink(os.path.join(os.path.dirname(__file__), "..", "..", "root_store.json"))
-except FileNotFoundError:
-    pass
-
 try:
     from atp_quic import QUICServer, QUICClient
 except ImportError:
@@ -30,12 +24,12 @@ except ImportError:
 
 
 async def main():
-    server = QUICServer()
+    server = QUICServer(trust_bootstrap_mode="tofu")
     srv_task = asyncio.create_task(server.start(host="127.0.0.1", port=18902))
     await asyncio.sleep(0.5)
     print("⚡ Server QUIC in ascolto su 127.0.0.1:18902")
 
-    client = QUICClient()
+    client = QUICClient(trust_bootstrap_mode="tofu")
     ok = await client.connect(host="127.0.0.1", port=18902)
     print(f"QUIC handshake: {'✅' if ok else '❌'}")
     if not ok:

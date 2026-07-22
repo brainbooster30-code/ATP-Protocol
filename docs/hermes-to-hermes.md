@@ -1,4 +1,4 @@
-# Come connettere due Hermes Agent via ATP v1.7
+# Come connettere due Hermes Agent via ATP v1.8
 
 Guida passo-passo per far comunicare due agenti Hermes su PC diversi
 via internet, usando il protocollo ATP. **Nessuna configurazione di
@@ -43,7 +43,7 @@ rete, firewall o port forwarding richiesta.**
 │   Oppure Key Card: .card         │
 └──────────────────────────┘       └──────────────────────────┘
          ▲                                     │
-         └─────────── ATP v1.7 ────────────────┘
+         └─────────── ATP v1.8 ────────────────┘
                  TLS + MCC + CBOR
 ```
 
@@ -455,10 +455,12 @@ python -c "import socket; socket.setdefaulttimeout(5); \
 ### "Handshake failed"
 
 ```
-Causa più comune: i due PC hanno Authority diverse.
-Soluzione: l'SDK usa demo_mode=True di default, che salta la
-verifica della firma dell'autorità. Se hai impostato
-demo_mode=False, registra le authority nel RootStore.
+Causa più comune: i due PC hanno authority diverse e il bootstrap è in
+modalità `strict`.
+Soluzione per demo controllate: usa `trust_bootstrap_mode="tofu"` su
+client e server. Soluzione per produzione: registra le authority nel
+RootStore o usa un manifest `authority-chain` firmato da una authority già
+fidata.
 ```
 
 ### UPnP non disponibile / Tunnel locale

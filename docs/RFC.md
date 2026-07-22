@@ -1,4 +1,4 @@
-# ATP v1.7 — RFC: Agent Transport Protocol
+# ATP v1.8 — RFC: Agent Transport Protocol
 
 **Category:** Experimental
 **RFC No:** ATP-RFC-001  
@@ -11,7 +11,7 @@
 
 ## 1. Introduction
 
-This document specifies the Agent Transport Protocol (ATP) version 1.7,
+This document specifies the Agent Transport Protocol (ATP) version 1.8,
 a peer-to-peer cryptographic protocol for secure communication between
 autonomous software agents. ATP provides identity, authentication, proof
 of origin, and task dispatch without a central server.
@@ -154,7 +154,7 @@ Special cases:
 
 ### 4.5 Commitment CBOR
 
-The commitment CBOR is a canonical CBOR map containing exactly 5 fields:
+The commitment CBOR is a canonical CBOR map containing the signed MCC fields:
 
 ```
 commitment = {
@@ -163,8 +163,15 @@ commitment = {
     "mcc_version":   uint,
     "authority_id":  tstr,
     "serial_number": bstr .size 16,
+    "critical_mask": [* tstr],
 }
 ```
+
+`critical_mask` MUST be normalized before signing and verifying: duplicate
+entries are removed and the remaining strings are sorted lexicographically.
+Leaf keys in `m.leaves` MUST be unique. Metadata leaves named `expiry_date`,
+`authority_id`, `mcc_version`, or `serial_number` MUST match the corresponding
+top-level MCC fields byte-for-byte.
 
 This MUST be encoded with canonical CBOR (RFC 8949 §4.2.1: sorted map
 keys, definite-length strings, shortest integer encoding).
@@ -183,6 +190,8 @@ Given an MCC `m` and the peer's authority public key `pk`:
 2. **Expiry check**: If `m.expiry_date <= current_time()`, return FAIL
 3. **Critical mask check**: For each key `k` in `m.critical_mask`,
    if no leaf with key `k` exists in `m.leaves`, return FAIL
+   If any leaf key is duplicated, or if any metadata leaf conflicts with
+   the matching top-level MCC field, return FAIL
 4. **Root recompute**: Recompute `leaf_hash` for every leaf and rebuild
    the Merkle tree per §4.4. If `root_hash != m.root_hash`, return FAIL
 5. **Authority key**: Retrieve authority public key from trusted store
@@ -226,8 +235,14 @@ CBOR Encoded Frame: canonical CBOR (RFC 8949 §4.2).
 | 0x02 | TASK_RESPONSE | §5.4 |
 | 0x03 | TASK_ACK | §5.5 |
 | 0x04 | TASK_ERROR | §5.6 |
+| 0x05 | TASK_CANCEL | §5.6 |
 | 0x10 | CONTROL_SHUTDOWN | §5.7 |
 | 0x11 | CONTROL_REVOKE_NOTIFY | §5.8 |
+| 0x12 | CONTROL_SHUTDOWN_ACK | §5.7 |
+| 0x13 | CONTROL_HEALTH | §5.7 |
+| 0x14 | CONTROL_HEALTH_RESP | §5.7 |
+| 0x15 | CONTROL_PING | §5.7 |
+| 0x16 | CONTROL_PONG | §5.7 |
 | 0x20 | ERROR | §5.9 |
 | 0x21 | ROOT_STORE_UPDATE | §5.10 |
 | 0x30 | VERSION_PROPOSE | §5.11 |
@@ -236,6 +251,10 @@ CBOR Encoded Frame: canonical CBOR (RFC 8949 §4.2).
 | 0x41 | MCC_BIND_RESPONSE | §5.14 |
 | 0x42 | MCC_BIND_CONFIRM | §5.15 |
 | 0x50 | CAPABILITY_EXCHANGE | §5.16 |
+| 0x60 | PEER_DISCOVERY | §8.4 |
+| 0x61 | PEER_HEARTBEAT | §8.4 |
+| 0x62 | TASK_FORWARD | §8.4 |
+| 0x63 | PEER_DISCOVERY_ACK | §8.4 |
 
 ### 5.3 TASK_REQUEST (0x01)
 
@@ -324,6 +343,14 @@ root-store-update = {
 }
 ```
 
+The decoded manifest MUST contain `manifest_type`.
+`rootstore-advertisement` is agent-signed and informational only; it MUST
+NOT add unknown authorities. `authority-chain` is authority-signed and MAY
+extend the Root Store only when the signing authority is already trusted.
+Implementations MUST NOT update nonce caches, version tracking, authority
+sets, or chain history for `authority-chain` until schema validation,
+freshness, trusted signer lookup, and signature verification have succeeded.
+
 ### 5.11 VERSION_PROPOSE (0x30)
 
 ```
@@ -357,10 +384,12 @@ mcc-bind-request = {
     "header": header,
     "mcc_cbor": bstr,
     "nonce": bstr .size 16,
+    ? "authority_pk": bstr .size 32,
 }
 ```
 
 The `nonce` MUST be generated from a CSPRNG and used only once.
+`authority_pk` is only used when the receiver explicitly enables TOFU.
 
 ### 5.14 MCC_BIND_RESPONSE (0x41)
 
@@ -370,6 +399,7 @@ mcc-bind-response = {
     "mcc_cbor": bstr,
     "nonce": bstr .size 16,
     "signature": bstr .size 64,
+    ? "authority_pk": bstr .size 32,
 }
 ```
 
@@ -453,11 +483,13 @@ apply for the duration of the connection.
 
 1. Initiator generates `nonce_i` (16 bytes CSPRNG)
 2. Initiator sends MCC_BIND_REQUEST containing its MCC and `nonce_i`
+   and MAY include `authority_pk` for explicit TOFU
 3. Responder verifies Initiator's MCC (8-step verification, §4.6)
 4. If verification fails, Responder sends ERROR(0x05) and closes
 5. Responder generates `nonce_r` (16 bytes CSPRNG)
 6. Responder sends MCC_BIND_RESPONSE with its MCC, `nonce_r`, and
-   `signature = Ed25519_sign(sk_r, nonce_i || "atp-bind-response")`
+   `signature = Ed25519_sign(sk_r, nonce_i || "atp-bind-response")`;
+   it MAY include `authority_pk` for explicit TOFU
 7. Initiator verifies Responder's MCC (§4.6)
 8. Initiator verifies the proof-of-possession signature
 9. If any verification fails, Initiator sends ERROR(0x05) and closes
@@ -545,11 +577,21 @@ Each frame's `frame_id` combined with `anti_replay_ttl_ms` (default 20s)
 prevents simple replay attacks. Implementations SHOULD maintain a
 bloom filter of recently seen frame_ids.
 
-### 9.5 Demo Mode
+### 8.4 Federation Frames
 
-The `demo_mode` flag disables authority signature verification (§4.6
-steps 5-6). This is INTENDED for testing and multi-machine demos.
-Production deployments MUST set `demo_mode = False`.
+`PEER_DISCOVERY` and `TASK_FORWARD` MUST carry an Ed25519 signature over
+their canonical CBOR payload. A receiver MUST ignore or drop unsigned
+frames and frames with invalid signatures. There is no unsigned fallback.
+
+### 9.5 Trust Bootstrap
+
+Default mode is `strict`: if an MCC authority is unknown to the local Root
+Store, verification fails. Implementations MAY offer explicit TOFU mode;
+when enabled, the bind frame MUST carry a 32-byte `authority_pk`, and the
+MCC MUST verify against that key before the authority is pinned locally.
+
+Production deployments SHOULD pre-provision trusted authorities or use an
+`authority-chain` manifest signed by an authority already trusted locally.
 
 ---
 

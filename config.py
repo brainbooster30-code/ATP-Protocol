@@ -1,12 +1,12 @@
 """
-ATP v1.7 — Configuration module.
+ATP v1.8 — Configuration module.
 All tunable parameters live here; load via `from config import *`.
 """
 
 import os
 
 # ── Protocol version ──────────────────────────────────────────────────────────
-ATP_VERSION = "1.7"
+ATP_VERSION = "1.8"
 
 # ── Transport / framing ───────────────────────────────────────────────────────
 MAX_BATCH_BYTES      = 1024 * 1024    # 1 MiB max frame payload
@@ -79,7 +79,9 @@ MONITOR_EVENT_LIMIT = 1000
 
 # ── Rate Limiter / Anti-Replay / Handshake Limiter / Buffered I/O / RootStore ──
 USE_BUFFERED_READER = True  # BufferedFrameReader per >500 t/s
-ROOT_STORE_BACKEND = "json"  # "json" o "sqlite"
+ROOT_STORE_BACKEND = os.getenv("ATP_ROOT_STORE_BACKEND", "json")  # "json" o "sqlite"
+ROOT_STORE_PATH = os.getenv("ATP_ROOT_STORE_PATH", "")
+TRUST_BOOTSTRAP_MODE = os.getenv("ATP_TRUST_BOOTSTRAP_MODE", "strict").lower()
 import asyncio, time, collections
 
 class RateLimiter:

@@ -1,5 +1,5 @@
 """
-ATP SDK v1.7 — Easy-to-use Python SDK for the Agent Transfer Protocol.
+ATP SDK v1.8 — Easy-to-use Python SDK for the Agent Transport Protocol.
 
 Provides simple wrappers around the core ATP implementation so you can
 build federated AI-agent networks in just a few lines of code.

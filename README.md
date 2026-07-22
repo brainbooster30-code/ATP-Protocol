@@ -2,7 +2,7 @@
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-95%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-60%20passing-brightgreen)]()
 [![Stress](https://img.shields.io/badge/stress-200%20t%2Fs%200%25%20error-brightgreen)]()
 
 **ATP (Agent Transport Protocol) è un protocollo crittografico peer-to-peer per la comunicazione tra agenti software autonomi.** Fornisce un canale cifrato e verificabile dove ogni agente possiede una identità autocertificata (MCC) e ogni messaggio è firmato — senza server centrale, senza intermediari.
@@ -170,6 +170,11 @@ response = await client.chat("Quali sono i vantaggi di ATP?")
 print(response)
 ```
 
+Il bootstrap della fiducia è `strict` di default. Per demo controllate tra
+macchine diverse usa `trust_bootstrap_mode="tofu"` su client/server; per
+produzione pre-provisiona il RootStore o distribuisci manifest
+`authority-chain` firmati da una authority già fidata.
+
 ### 3. Esegui gli esempi
 
 Tutti gli esempi sono in `sdk/examples/`:
@@ -263,6 +268,7 @@ python teacher_client.py 192.168.1.50:8443
 - **Cuckoo Filter** (FPR ≈2.3e⁻³¹) — filtraggio probabilistico
 - **RootStore** — PKI distribuita con chain-of-manifests
   - Backend **JSON** (default) o **SQLite** (WAL mode, multi-processo)
+  - Stato runtime fuori repo: default `~/.atp/root_store.json` o `.db`
   - `add_authority` idempotente — stessa chiave = nessun version drift
 - **Gossip TCP** — seriali revocati trasmessi a peer su porta 8444
 - **Degradation Policy** — CONFIRMED → STALE → UNCERTAIN
@@ -285,7 +291,7 @@ python teacher_client.py 192.168.1.50:8443
 - **TASK_FORWARD (0x62)** — firmato Ed25519, TTL ≤ 5 hop
 - **Routing table** — max 100 peer, auto-pulizia peer morti
 - **Connection pool** — outbound pool, idle timeout 300s
-- **Backward compat** — frame senza firma ancora accettati durante migrazione
+- **No unsigned fallback** — discovery e forwarding non firmati vengono ignorati
 
 ### 🌐 Tunnel internet zero-config
 - UPnP nativo (pure Python, zero dipendenze)
@@ -302,8 +308,9 @@ python teacher_client.py 192.168.1.50:8443
 
 ### 🔗 Multi-authority bootstrap
 - **ROOT_STORE_UPDATE (0x21)** — scambio di manifest firmati dopo handshake
-- Firma con **chiave dell'autorità condivisa** (non più con chiave agente)
-- `chain_add` bootstrap — autorità sconosciuta verificabile via manifest auto-contenuto
+- `rootstore-advertisement` è firmato dall'agente autenticato ed è solo informativo
+- `authority-chain` è firmato da una authority già fidata ed è l'unico manifest che può aggiungere authority
+- Default `strict`; `trust_bootstrap_mode="tofu"` abilita pinning esplicito via `authority_pk`
 
 ### 📐 Cross-language SDK SPEC
 - `docs/SDK_SPEC.md` — wire format esatto con CDDL, esempi byte-level
@@ -327,13 +334,10 @@ skill_view(name='atp-protocol-skill')
 
 | Metrica | Valore |
 |---------|--------|
-| Test core | 67/67 ✅ |
-| Test SDK | 21/21 ✅ |
-| Test SQLite | 7/7 ✅ |
-| **Test totali** | **95/95** ✅ |
-| Stress test | 200 task, **200 t/s**, **P50 31ms**, **P99 95ms** |
-| Errori stress | **0%** |
-| Warning runtime | **0** |
+| Test pytest | 60/60 ✅ |
+| Security test | PASS ✅ |
+| Federation test | PASS ✅ |
+| Warning runtime | 1 warning Pydantic esterno |
 
 ---
 

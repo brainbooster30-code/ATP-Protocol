@@ -74,7 +74,7 @@ async def run_sede_a(sede_b_host: str, sede_b_port: int):
     print()
 
     # ── Avvia server Sede A (offre ChatGPT) ─────────────────────────
-    server_a = SimpleATPServer(agent_name="sede-a-roma")
+    server_a = SimpleATPServer(agent_name="sede-a-roma", trust_bootstrap_mode="tofu")
     server_a.register_handler("ask_chatgpt", call_openai)
     await server_a.start(port=PORTA_SEDE_A)
     print(f"  [SEDE A] Server attivo su :{PORTA_SEDE_A}")
@@ -96,7 +96,7 @@ async def run_sede_a(sede_b_host: str, sede_b_port: int):
 
     # ── Connetti a Sede B per ottenere Claude ───────────────────────
     # Prova connessione diretta host:port
-    client_b = SimpleATPClient("sede-a-roma → sede-b-milano")
+    client_b = SimpleATPClient("sede-a-roma → sede-b-milano", trust_bootstrap_mode="tofu")
     ok = await client_b.connect(host=sede_b_host, port=sede_b_port)
     if not ok:
         print(f"  ❌ Impossibile connettersi a Sede B ({sede_b_host}:{sede_b_port})")
@@ -114,7 +114,7 @@ async def run_sede_a(sede_b_host: str, sede_b_port: int):
     prompt = "Spiega il concetto di agenti autonomi"
     print(f"  Prompt: \"{prompt}\"")
     # Chiama il proprio server locale su ask_chatgpt
-    chatgpt_local = SimpleATPClient("sede-a-locale")
+    chatgpt_local = SimpleATPClient("sede-a-locale", trust_bootstrap_mode="tofu")
     await chatgpt_local.connect(port=PORTA_SEDE_A)
     resp = await chatgpt_local.send("ask_chatgpt", prompt)
     print(f"  Risposta: {resp['result'][:200] if resp else 'ERRORE'}")
@@ -138,7 +138,7 @@ async def run_sede_a(sede_b_host: str, sede_b_port: int):
     prompt = "Quali sono i vantaggi della crittografia asimmetrica?"
     print(f"  Prompt: \"{prompt}\"")
     # Interroga entrambe le AI contemporaneamente
-    chatgpt_local2 = SimpleATPClient("sede-a-locale2")
+    chatgpt_local2 = SimpleATPClient("sede-a-locale2", trust_bootstrap_mode="tofu")
     await chatgpt_local2.connect(port=PORTA_SEDE_A)
     chatgpt, claude = await asyncio.gather(
         chatgpt_local2.send("ask_chatgpt", prompt),
@@ -164,7 +164,7 @@ async def run_sede_b(sede_a_host: str, sede_a_port: int):
     print()
 
     # ── Avvia server Sede B (offre Claude) ─────────────────────────
-    server_b = SimpleATPServer(agent_name="sede-b-milano")
+    server_b = SimpleATPServer(agent_name="sede-b-milano", trust_bootstrap_mode="tofu")
     server_b.register_handler("ask_claude", call_claude)
     await server_b.start(port=PORTA_SEDE_B)
     print(f"  [SEDE B] Server attivo su :{PORTA_SEDE_B}")
@@ -186,7 +186,7 @@ async def run_sede_b(sede_a_host: str, sede_a_port: int):
 
     # ── Connetti a Sede A per ottenere ChatGPT ─────────────────────
     # Prova connessione diretta host:port (o Key Card tramite import_key_card)
-    client_a = SimpleATPClient("sede-b-milano → sede-a-roma")
+    client_a = SimpleATPClient("sede-b-milano → sede-a-roma", trust_bootstrap_mode="tofu")
     ok = await client_a.connect(host=sede_a_host, port=sede_a_port)
     if not ok:
         print(f"  ❌ Impossibile connettersi a Sede A ({sede_a_host}:{sede_a_port})")
@@ -203,7 +203,7 @@ async def run_sede_b(sede_a_host: str, sede_a_port: int):
     print("─" * 60)
     prompt = "Spiega il concetto di agenti autonomi"
     print(f"  Prompt: \"{prompt}\"")
-    claude_local = SimpleATPClient("sede-b-locale")
+    claude_local = SimpleATPClient("sede-b-locale", trust_bootstrap_mode="tofu")
     await claude_local.connect(port=PORTA_SEDE_B)
     resp = await claude_local.send("ask_claude", prompt)
     print(f"  Risposta: {resp['result'][:200] if resp else 'ERRORE'}")
@@ -227,7 +227,7 @@ async def run_sede_b(sede_a_host: str, sede_a_port: int):
     prompt_a = "Scrivi una email formale per un cliente"
     prompt_b = "Riassumi il verbale della riunione"
     # ChatGPT via Sede A, Claude via server locale
-    claude_local = SimpleATPClient("sede-b-locale2")
+    claude_local = SimpleATPClient("sede-b-locale2", trust_bootstrap_mode="tofu")
     await claude_local.connect(port=PORTA_SEDE_B)
     chatgpt, claude = await asyncio.gather(
         client_a.send("ask_chatgpt", prompt_a),

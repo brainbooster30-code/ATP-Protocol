@@ -1,5 +1,5 @@
 """
-ATP v1.7 — PySide6 Dashboard.
+ATP v1.8 — PySide6 Dashboard.
 Real-time monitoring GUI with tabs, charts, and thread-safe backend integration.
 """
 
@@ -322,7 +322,7 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._start_refresh_timers()
 
-        self.setWindowTitle("ATP v1.7 Dashboard")
+        self.setWindowTitle("ATP v1.8 Dashboard")
         self.resize(1200, 800)
 
         # Apply dark theme
@@ -1161,8 +1161,8 @@ class MainWindow(QMainWindow):
     def _show_about(self):
         QMessageBox.about(
             self,
-            "About ATP v1.7",
-            "Agent Transport Protocol v1.7\n"
+            "About ATP v1.8",
+            "Agent Transport Protocol v1.8\n"
             "Demo implementation with PySide6 dashboard.\n\n"
             "Built with: blake3, cbor2, cryptography, aiohttp, PySide6, matplotlib\n\n"
             "© 2026 — ATP Project"

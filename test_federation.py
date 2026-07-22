@@ -10,11 +10,13 @@ Esecuzione:  python test_federation.py
 import asyncio, sys, os, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 errors = []
 
 
-def test_fed(name: str, cond: bool, detail: str = ""):
+def check_fed(name: str, cond: bool, detail: str = ""):
     if cond:
         print(f"  ✅ {name}")
     else:
@@ -38,21 +40,19 @@ async def main():
     from server import ATPServer
     from client import ATPClient
 
-    srv_a = ATPServer(); srv_a.identity.agent_name = "node-alpha"
-    srv_b = ATPServer(); srv_b.identity.agent_name = "node-beta"
-    srv_c = ATPServer(); srv_c.identity.agent_name = "node-gamma"
+    srv_a = ATPServer(trust_bootstrap_mode="tofu"); srv_a.identity.agent_name = "node-alpha"
+    srv_b = ATPServer(trust_bootstrap_mode="tofu"); srv_b.identity.agent_name = "node-beta"
+    srv_c = ATPServer(trust_bootstrap_mode="tofu"); srv_c.identity.agent_name = "node-gamma"
 
     # Isolate gossip ports
     config.GOSSIP_PORT = GOS_A
-    t_a = asyncio.create_task(srv_a.start("127.0.0.1", ATP_A, block=False, health_port=HC_A))
-    await asyncio.sleep(0.5)
+    await srv_a.start("127.0.0.1", ATP_A, block=False, health_port=HC_A)
 
     config.GOSSIP_PORT = GOS_B
-    t_b = asyncio.create_task(srv_b.start("127.0.0.1", ATP_B, block=False, health_port=HC_B))
-    await asyncio.sleep(0.3)
+    await srv_b.start("127.0.0.1", ATP_B, block=False, health_port=HC_B)
 
     config.GOSSIP_PORT = GOS_C
-    t_c = asyncio.create_task(srv_c.start("127.0.0.1", ATP_C, block=False, health_port=HC_C))
+    await srv_c.start("127.0.0.1", ATP_C, block=False, health_port=HC_C)
     await asyncio.sleep(0.3)
 
     # Restore original gossip port
@@ -63,9 +63,9 @@ async def main():
     print("\n2. Connessioni + peer discovery...")
 
     # A → B
-    cli_ab = ATPClient()
+    cli_ab = ATPClient(trust_bootstrap_mode="tofu")
     ok_ab = await cli_ab.connect("127.0.0.1", ATP_B)
-    test_fed("A → B handshake", ok_ab)
+    check_fed("A → B handshake", ok_ab)
     if ok_ab:
         # Manual peer discovery: send signed PEER_DISCOVERY to B
         from atp_core import build_header, ed25519_sign
@@ -89,9 +89,9 @@ async def main():
         await cli_ab.send_task("echo", "hello", deadline_ms=3000)
 
     # B → C
-    cli_bc = ATPClient()
+    cli_bc = ATPClient(trust_bootstrap_mode="tofu")
     ok_bc = await cli_bc.connect("127.0.0.1", ATP_C)
-    test_fed("B → C handshake", ok_bc)
+    check_fed("B → C handshake", ok_bc)
     if ok_bc:
         peers_b = [
             {"peer_id": "node-beta", "host": "127.0.0.1", "port": ATP_B,
@@ -125,9 +125,9 @@ async def main():
     print(f"   node-gamma peers: {pc_c}")
 
     # B should know about A and C via direct connections
-    test_fed("B conosce almeno 1 peer", pc_b >= 1)
+    check_fed("B conosce almeno 1 peer", pc_b >= 1)
     # C should know about B via direct connection
-    test_fed("C conosce almeno 1 peer", pc_c >= 1)
+    check_fed("C conosce almeno 1 peer", pc_c >= 1)
 
     # ── Task forwarding ───────────────────────────────────────
     print("\n4. Task forwarding...")
@@ -158,26 +158,22 @@ async def main():
             fwd_ok = True
         except Exception:
             fwd_ok = False
-        test_fed("TASK_FORWARD inviato via federation", fwd_ok)
+        check_fed("TASK_FORWARD inviato via federation", fwd_ok)
 
     # ── Echo on all servers ───────────────────────────────────
     print("\n5. Echo...")
     for name, port in [("A", ATP_A), ("B", ATP_B), ("C", ATP_C)]:
-        cli = ATPClient()
+        cli = ATPClient(trust_bootstrap_mode="tofu")
         ok = await cli.connect("127.0.0.1", port)
         if ok:
             r = await cli.send_task("echo", f"ping-{name}", deadline_ms=3000)
-            test_fed(f"Echo node {name}", r.get("status") == "ok")
+            check_fed(f"Echo node {name}", r.get("status") == "ok")
         await cli.disconnect()
 
     # ── Cleanup ───────────────────────────────────────────────
     print("\n6. Cleanup...")
     await cli_ab.disconnect()
     await cli_bc.disconnect()
-    for t in [t_a, t_b, t_c]:
-        t.cancel()
-        try: await t
-        except: pass
     for s in [srv_a, srv_b, srv_c]:
         try: await asyncio.wait_for(s.stop(), timeout=2.0)
         except: pass
@@ -190,6 +186,10 @@ async def main():
     else:
         print("✅ ALL FEDERATION TESTS PASSED")
     print(f"{'='*50}")
+
+
+    if errors:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

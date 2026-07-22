@@ -1,5 +1,5 @@
 """
-ATP v1.7 — TLS Certificate helpers.
+ATP v1.8 — TLS Certificate helpers.
 Extracted from agent.py for separation of concerns.
 CA + signed certs for mutual TLS.
 """

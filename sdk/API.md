@@ -1,4 +1,4 @@
-# ATP SDK v1.7 — API Reference
+# ATP SDK v1.8 — API Reference
 
 ---
 
@@ -19,7 +19,7 @@ Espone le classi pubbliche, le funzioni di Key Exchange e AutoTunnel.
 | `import_key_card` | `fn` | Importa Key Card e verifica firma Ed25519 |
 | `connect_with_key_card` | `fn` | Importa Key Card + connette in un passo |
 | `AutoTunnel` | `class` | Tunnel UPnP nativo (pure Python) — zero dipendenze esterne |
-| `__version__` | `str` | `"1.7"` |
+| `__version__` | `str` | `"1.8"` |
 
 ---
 
@@ -27,7 +27,7 @@ Espone le classi pubbliche, le funzioni di Key Exchange e AutoTunnel.
 
 ```python
 class SimpleATPClient:
-    def __init__(self, agent_name="atp-sdk-client", monitor=None)
+    def __init__(self, agent_name="atp-sdk-client", monitor=None, trust_bootstrap_mode=None)
     async def connect(self, host="127.0.0.1", port=8443, timeout=None) -> bool
     async def send(self, task_type, payload, deadline_ms=30000) -> dict | None
     async def chat(self, prompt) -> str
@@ -35,7 +35,7 @@ class SimpleATPClient:
     async def close() -> None
     connected: bool
     peer_mcc_hash: str | None
-    demo_mode: bool
+    trust_bootstrap_mode: str | None
     async def __aenter__() -> "SimpleATPClient"
     async def __aexit__(*args) -> None
 ```
@@ -43,12 +43,13 @@ class SimpleATPClient:
 High-level ATP client con API minimali. Gestisce automaticamente TLS,
 creazione identità, MCC, handshake in 5 fasi, e dispatch task DeepSeek.
 
-### `__init__(agent_name="atp-sdk-client", monitor=None)`
+### `__init__(agent_name="atp-sdk-client", monitor=None, trust_bootstrap_mode=None)`
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `agent_name` | `str` | `"atp-sdk-client"` | Nome agente, inserito nell'MCC come identità |
 | `monitor` | `Monitor \| None` | `None` | Monitor opzionale per log eventi protocollo |
+| `trust_bootstrap_mode` | `str \| None` | `None` | `None` usa config (`strict`); `"tofu"` abilita pinning esplicito della authority del peer |
 
 Crea il client. La connessione non avviene finché non si chiama `connect()`.
 
@@ -58,7 +59,7 @@ Crea il client. La connessione non avviene finché non si chiama `connect()`.
 
 Connette al server ATP ed esegue l'handshake completo in 5 fasi:
 
-1. Connessione TCP + TLS (cert auto-firmati accettati in demo mode)
+1. Connessione TCP + TLS
 2. Creazione `AgentIdentity` con chiavi X25519 + Ed25519
 3. Negoziazione versione (`VERSION_PROPOSE` → `VERSION_ACK`)
 4. Scambio MCC + identity binding con proof-of-possession
@@ -180,15 +181,15 @@ if client.connected:
 
 ---
 
-### `demo_mode: bool` (attribute)
+### `trust_bootstrap_mode: str | None` (attribute)
 
-Default `True`. Quando attivo, salta la verifica della firma dell'autorità nel MCC
-del peer (trust-on-first-use). Necessario per deployment multi-macchina dove ogni
-processo ha la propria istanza Authority con chiavi diverse.
+Default `None`, cioè usa `TRUST_BOOTSTRAP_MODE` da config (`"strict"`).
+In modalità `"strict"` una authority MCC ignota viene rifiutata. In modalità
+`"tofu"` il bind frame deve includere `authority_pk`, l'MCC viene verificato
+con quella chiave e la authority viene pinnata localmente.
 
 ```python
-client = SimpleATPClient("prod-agent")
-client.demo_mode = False   # produzione: verifica firma autorità
+client = SimpleATPClient("demo-agent", trust_bootstrap_mode="tofu")
 ```
 
 ---
@@ -211,7 +212,7 @@ async with SimpleATPClient("agent") as client:
 
 ```python
 class SimpleATPServer:
-    def __init__(self, agent_name="atp-sdk-server", monitor=None)
+    def __init__(self, agent_name="atp-sdk-server", monitor=None, trust_bootstrap_mode=None)
     async def start(self, host="127.0.0.1", port=8443) -> None
     async def stop() -> None
     def on_task(self, task_type) -> Callable
@@ -224,12 +225,13 @@ class SimpleATPServer:
 Server ATP che accetta connessioni TLS, esegue l'handshake completo e
 dispatcha i task ai gestori registrati.
 
-### `__init__(agent_name="atp-sdk-server", monitor=None)`
+### `__init__(agent_name="atp-sdk-server", monitor=None, trust_bootstrap_mode=None)`
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `agent_name` | `str` | `"atp-sdk-server"` | Nome del server, inserito nell'MCC |
 | `monitor` | `Monitor \| None` | `None` | Monitor per log eventi |
+| `trust_bootstrap_mode` | `str \| None` | `None` | `None` usa config (`strict`); `"tofu"` abilita pinning esplicito della authority del peer |
 
 ---
 
@@ -509,7 +511,7 @@ Firma degli handler registrabili con `on_task()` / `register_handler()`.
 
 ```python
 class SyncATPClient:
-    def __init__(self, agent_name="atp-sdk-client", monitor=None)
+    def __init__(self, agent_name="atp-sdk-client", monitor=None, trust_bootstrap_mode=None)
     def connect(self, host="127.0.0.1", port=8443) -> bool
     def send(self, task_type, payload, deadline_ms=30000) -> dict | None
     def chat(self, prompt) -> str
@@ -535,7 +537,7 @@ with SyncATPClient("sync-agent") as client:
 
 ```python
 class SyncATPServer:
-    def __init__(self, agent_name="atp-sdk-server", monitor=None)
+    def __init__(self, agent_name="atp-sdk-server", monitor=None, trust_bootstrap_mode=None)
     def start(self, host="127.0.0.1", port=8443) -> None
     def stop() -> None
     running: bool

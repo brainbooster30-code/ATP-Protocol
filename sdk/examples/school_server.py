@@ -152,7 +152,7 @@ async def main():
     print("═" * 64)
     print()
 
-    server = SimpleATPServer(agent_name=SCHOOL_NAME)
+    server = SimpleATPServer(agent_name=SCHOOL_NAME, trust_bootstrap_mode="tofu")
     server.register_handler("submit_lesson_plan", handle_lesson_plan)
     server.register_handler("check_grades", handle_check_grades)
     server.register_handler("assign_homework", handle_assign_homework)

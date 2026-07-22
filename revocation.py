@@ -1,5 +1,5 @@
 """
-ATP v1.7 — Revocation subsystem.
+ATP v1.8 — Revocation subsystem.
 Real Cuckoo Filter + Gossip protocol + Root Store Chain + Degradation Policy.
 """
 
@@ -35,7 +35,11 @@ logger = logging.getLogger(__name__)
 #
 
 class CuckooFilter:
-    """Thread-safe Cuckoo filter for approximate set membership."""
+    """Thread-safe Cuckoo filter for approximate set membership.
+    
+    Stores (fingerprint, item_bytes) pairs so auto-resize can
+    correctly re-hash items with the new bucket count.
+    """
 
     def __init__(self, buckets: int = 1024, slots: int = 4, fingerprint_bits: int = 16):
         # Buckets must be power of 2
@@ -46,29 +50,34 @@ class CuckooFilter:
         self._fprint_bits = fingerprint_bits
         self._fprint_mask = (1 << fingerprint_bits) - 1
         self._max_kicks = 500
+        self._resize_count = 0
+        self._resizing = False  # guard against recursive resize
 
-        # Bucket storage: list of lists
-        self._table: list[list[int]] = [[] for _ in range(self._buckets)]
-        self._lock = threading.Lock()
+        # Bucket storage: list of lists of (fingerprint, item_bytes) tuples
+        # Storing original items enables correct re-hashing during resize.
+        self._table: list[list[tuple[int, bytes]]] = [[] for _ in range(self._buckets)]
+        self._lock = threading.RLock()
         self._size = 0
         self._max_size = int(self._buckets * self._slots * 0.95)  # 95% load factor
 
     # ── public API ──────────────────────────────────────────────────────
 
     def insert(self, item: bytes) -> bool:
-        """Insert *item* into the filter. Returns True on success."""
+        """Insert *item* into the filter. Returns True on success.
+        Auto-resizes (doubles buckets) when load factor is exceeded.
+        """
         fp, i1, i2 = self._hash(item)
 
         with self._lock:
             # Try bucket i1 first
             if len(self._table[i1]) < self._slots:
-                self._table[i1].append(fp)
+                self._table[i1].append((fp, item))
                 self._size += 1
                 return True
 
             # Try bucket i2
             if len(self._table[i2]) < self._slots:
-                self._table[i2].append(fp)
+                self._table[i2].append((fp, item))
                 self._size += 1
                 return True
 
@@ -80,21 +89,36 @@ class CuckooFilter:
                 if not bucket:
                     continue
                 kick_idx = self._random_index(len(bucket))
-                kicked_fp = bucket[kick_idx]
-                bucket[kick_idx] = fp  # place our fp here
+                kicked_fp, kicked_item = bucket[kick_idx]
+                bucket[kick_idx] = (fp, item)  # place our fp + item here
 
                 # Re-insert kicked fingerprint into its alternate bucket
                 alt_i = cur_i ^ self._alt_index(kicked_fp, cur_i)
                 if len(self._table[alt_i]) < self._slots:
-                    self._table[alt_i].append(kicked_fp)
+                    self._table[alt_i].append((kicked_fp, kicked_item))
                     self._size += 1
                     return True
                 cur_i = alt_i
-                fp = kicked_fp
+                fp, item = kicked_fp, kicked_item
 
-            # Too many kicks → filter full (rehash needed)
-            logger.warning("CuckooFilter: too many kicks, filter may be full")
-            return False
+            # Too many kicks → filter full → auto-resize (unless already resizing)
+            logger.warning(
+                "CuckooFilter: too many kicks (size=%d/%d), resizing (cycle=%d)",
+                self._size, self._max_size, self._resize_count,
+            )
+
+        # Resize OUTSIDE the lock to minimise lock hold time
+        if not self._resizing:
+            self._resize()
+            # Retry insert after resize (re-acquires lock)
+            return self.insert(item)
+
+        # Recursive resize guard reached — filter truly full
+        logger.error(
+            "CuckooFilter: cannot resize further (recursive guard, size=%d)",
+            self._size,
+        )
+        return False
 
     def contains(self, item: bytes) -> bool:
         """Check if *item* may be in the filter. False positives possible."""
@@ -107,12 +131,11 @@ class CuckooFilter:
         with self._lock:
             for idx in (i1, i2):
                 bucket = self._table[idx]
-                try:
-                    bucket.remove(fp)
-                    self._size -= 1
-                    return True
-                except ValueError:
-                    continue
+                for i, (existing_fp, existing_item) in enumerate(bucket):
+                    if existing_fp == fp:
+                        del bucket[i]
+                        self._size -= 1
+                        return True
         return False
 
     @property
@@ -124,6 +147,49 @@ class CuckooFilter:
         return self._size / (self._buckets * self._slots)
 
     # ── internal ────────────────────────────────────────────────────────
+
+    def _resize(self):
+        """Double the bucket count and rehash all existing fingerprints.
+
+        Called when insert fails due to capacity. Acquires the lock,
+        saves all stored (fingerprint, item) pairs, doubles the table,
+        and re-inserts every item using the new bucket count via _hash.
+        """
+        with self._lock:
+            if self._resizing:
+                # Already resizing (recursive call) — fail-safe
+                return
+            self._resizing = True
+        try:
+            with self._lock:
+                old_buckets = self._buckets
+                new_buckets = old_buckets * 2
+                # Save all stored items for re-hashing (correct bucket indices)
+                all_items = [item for bucket in self._table for _, item in bucket]
+                # Reset table with doubled capacity
+                self._buckets = new_buckets
+                self._table = [[] for _ in range(new_buckets)]
+                self._size = 0
+                self._max_size = int(self._buckets * self._slots * 0.95)
+                self._resize_count += 1
+            # Re-insert OUTSIDE lock to let insert() acquire the lock independently
+            reinsert_ok = 0
+            reinsert_fail = 0
+            for item in all_items:
+                if self.insert(item):
+                    reinsert_ok += 1
+                else:
+                    reinsert_fail += 1
+            with self._lock:
+                logger.info(
+                    "CuckooFilter resized: %d → %d buckets, "
+                    "%d ok, %d failed (cycle=%d)",
+                    old_buckets, new_buckets,
+                    reinsert_ok, reinsert_fail, self._resize_count,
+                )
+        finally:
+            with self._lock:
+                self._resizing = False
 
     def _hash(self, item: bytes) -> tuple[int, int, int]:
         """Return (fingerprint, bucket_index_1, bucket_index_2)."""
@@ -145,7 +211,7 @@ class CuckooFilter:
 
     def _bucket_has(self, idx: int, fp: int) -> bool:
         with self._lock:
-            return fp in self._table[idx]
+            return any(existing_fp == fp for existing_fp, _ in self._table[idx])
 
     def _random_index(self, bucket_len: int) -> int:
         """Cryptographically secure random index for bucket eviction."""
@@ -174,9 +240,12 @@ class RootStore:
 
     def __init__(self, path: Optional[str] = None):
         self._lock = threading.Lock()
-        self._persist_path = path or os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "root_store.json"
-        )
+        if path is None:
+            from config import ROOT_STORE_PATH
+            path = ROOT_STORE_PATH or os.path.join(
+                os.path.expanduser("~"), ".atp", "root_store.json"
+            )
+        self._persist_path = path
         self._seen_nonces: set[bytes] = set()           # anti-replay
         self._manifest_ts_latest: dict[str, int] = {}   # per-authority freshness
         self._version: int = 1                           # monotonic, increments on changes
@@ -216,6 +285,7 @@ class RootStore:
     def _save(self):
         """Persist root store to JSON file."""
         try:
+            os.makedirs(os.path.dirname(os.path.abspath(self._persist_path)), exist_ok=True)
             data = {
                 "version": self._manifest["version"],
                 "authorities": {},
@@ -271,103 +341,71 @@ class RootStore:
     def chain_add(self, signed_manifest: bytes) -> bool:
         """Add a signed manifest to the chain, verifying its signature.
 
-        The manifest should be a CBOR structure signed by an already-trusted
-        authority. Format:
-        {
-            "manifest_version": uint,
-            "manifest_id": bstr .size 16,
-            "prev_manifest_id": bstr .size 16,
-            "timestamp": uint,
-            "authority_id": tstr,
-            "authority_pk": bstr .size 32,
-            "quorum_threshold": uint,
-            "authorities": [{ "authority_id": tstr, "pk": bstr .size 32 }],
-            "signature": bstr .size 64
-        }
+        Delegates CBOR parsing and signature verification to
+        _verify_chain_manifest_cbor (shared with RootStoreSQLite).
 
-        The signature is Ed25519 over all fields except 'signature'.
-        Returns True if accepted, False if verification fails.
+        Returns True if accepted and persisted, False otherwise.
         """
-        try:
-            import cbor2 as _cbor2
-            manifest = _cbor2.loads(signed_manifest)
-            sig = manifest.pop("signature", b"")
-            if len(sig) != 64:
-                logger.warning("Chain: invalid signature length")
-                return False
-            # Re-serialize without signature for verification
-            payload = _cbor2.dumps(manifest, canonical=True)
+        manifest = _verify_chain_manifest_cbor(
+            signed_manifest,
+            get_authority_fn=lambda aid: self.get_authority(aid),
+        )
+        if manifest is None:
+            return False
 
-            # Anti-replay: check nonce and timestamp freshness
-            manifest_nonce = manifest.get("manifest_nonce", b"")
-            manifest_ts = manifest.get("manifest_ts", 0)
-            signer_id_pre = manifest.get("authority_id", "")
-            now = int(time.time())
-            if manifest_ts and abs(now - manifest_ts) > 300:
-                logger.warning("Chain: stale manifest (ts=%d, now=%d, delta=%d)",
-                               manifest_ts, now, now - manifest_ts)
-                return False
+        now = int(time.time())
+        manifest_nonce = manifest.get("manifest_nonce", b"")
+        manifest_version = manifest.get("rootstore_version", 0)
+        authorities = manifest.get("authorities", [])
+        signer_id = manifest.get("authority_id", "")
+
+        with self._lock:
+            # Anti-replay: nonce uniqueness
             if manifest_nonce:
-                with self._lock:
-                    if manifest_nonce in self._seen_nonces:
-                        logger.warning("Chain: duplicate nonce — possible replay attack")
-                        return False
-                    self._seen_nonces.add(manifest_nonce)
-                    if len(self._seen_nonces) > 10_000:
-                        self._seen_nonces.clear()
+                if manifest_nonce in self._seen_nonces:
+                    logger.warning("Chain: duplicate nonce — possible replay attack")
+                    return False
 
             # Version check: reject stale manifests
-            # NOTE: allow equal version (same RootStore state pushed by
-            # different agents/sessions) — anti-replay is handled by
-            # manifest_nonce and 300s freshness window above.
-            manifest_version = manifest.get("rootstore_version", 0)
             if manifest_version:
-                with self._lock:
-                    latest = self._manifest_ts_latest.get(signer_id_pre, 0)
-                    if manifest_version < latest:
-                        logger.warning("Chain: stale manifest version %d < %d for %s",
-                                       manifest_version, latest, signer_id_pre)
-                        return False
-                    if manifest_version > latest:
-                        self._manifest_ts_latest[signer_id_pre] = manifest_version
+                latest = self._manifest_ts_latest.get(signer_id, 0)
+                if manifest_version < latest:
+                    logger.warning(
+                        "Chain: stale manifest version %d < %d for %s",
+                        manifest_version, latest, signer_id,
+                    )
+                    return False
 
-            # Find the signing authority — first try RootStore, then bootstrap
-            signer_id = manifest.get("authority_id", "")
-            signer_pk = None
-            with self._lock:
-                entry = self._manifest["authorities"].get(signer_id)
-                if entry:
-                    signer_pk = entry["pk"]
-            if signer_pk is None:
-                # Bootstrap: look for the authority's own pk in the manifest
-                for entry in manifest.get("authorities", []):
-                    if entry.get("authority_id") == signer_id:
-                        signer_pk = entry["pk"]
-                        break
-            if signer_pk is None:
-                logger.warning("Chain: signing authority %s not found", signer_id)
-                return False
-            # Verify signature
-            from atp_core import ed25519_verify
-            if not ed25519_verify(signer_pk, sig, payload):
-                logger.warning("Chain: bad signature on manifest from %s",
-                               signer_id)
-                return False
-            # Add new authorities from manifest
-            for entry in manifest.get("authorities", []):
-                self.add_authority(entry["authority_id"], entry["pk"])
-            with self._lock:
-                self._manifest["chain"].append({
-                    "manifest": signed_manifest,
-                    "added": int(time.time()),
-                })
-                self._save()
-            logger.info("Chain: added manifest from %s (%d authorities)",
-                        signer_id, len(manifest.get("authorities", [])))
-            return True
-        except Exception as exc:
-            logger.warning("Chain: manifest verification error — %s", exc)
-            return False
+            # Commit: nonce, version, authorities
+            if manifest_nonce:
+                self._seen_nonces.add(manifest_nonce)
+                if len(self._seen_nonces) > 10_000:
+                    self._seen_nonces.clear()
+
+            if manifest_version and manifest_version > latest:
+                self._manifest_ts_latest[signer_id] = manifest_version
+
+            for entry in authorities:
+                authority_id = entry["authority_id"]
+                pk = entry["pk"]
+                existing = self._manifest["authorities"].get(authority_id)
+                if existing and existing["pk"] == pk:
+                    continue
+                self._manifest["authorities"][authority_id] = {
+                    "pk": pk,
+                    "added": now,
+                    "expires": now + 86400 * 365,
+                }
+                self._version += 1
+
+            self._manifest["chain"].append({
+                "manifest": signed_manifest,
+                "added": now,
+            })
+            self._save()
+        logger.info("Chain: added manifest from %s (%d authorities)",
+                    signer_id, len(authorities))
+        return True
 
     @property
     def manifest(self) -> dict:
@@ -459,7 +497,7 @@ class GossipProtocol:
     Every GOSSIP_INTERVAL_S seconds, each node sends its known revoked
     serial_numbers to GOSSIP_FANOUT randomly selected peers as CBOR payloads
     over plain TCP (no TLS — gossip is authenticated via Ed25519 signatures
-    in a future version).
+    with external peer key verification).
     """
 
     def __init__(self, node_id: str, monitor=None, signing_sk: Optional[bytes] = None):
@@ -468,6 +506,9 @@ class GossipProtocol:
         self._peers: dict[str, GossipPeer] = {}
         self._lock = asyncio.Lock()
         self._revoked_serials: set[bytes] = set()
+        # Trusted peer keys: peer_id → ed25519_pk (32 bytes)
+        # Used by GossipServer to verify incoming gossip signatures.
+        self._trusted_peers: dict[str, bytes] = {}
         # Ed25519 signing key for authenticating gossip payloads.
         # If None, gossip is sent unsigned (backward compat during migration).
         if signing_sk is None:
@@ -496,6 +537,40 @@ class GossipProtocol:
 
     def remove_peer(self, peer_id: str):
         self._peers.pop(peer_id, None)
+
+    def trust_gossip_peer(self, peer_id: str, ed25519_pk: bytes):
+        """Pin a trusted gossip peer's Ed25519 public key.
+
+        Once pinned, GossipServer will reject gossip from this peer_id
+        unless the signature matches the pinned key.
+        """
+        if len(ed25519_pk) == 32:
+            self._trusted_peers[peer_id] = ed25519_pk
+            logger.info("Gossip: trusted peer %s pinned (%s...)",
+                        peer_id, ed25519_pk.hex()[:8])
+        else:
+            logger.warning("Gossip: invalid Ed25519 key for peer %s", peer_id)
+
+    def load_trusted_peers(self, path: Optional[str] = None):
+        """Load trusted gossip peers from a JSON file.
+
+        Format:
+        {"peers": {"peer-id-1": "ed25519_pk_hex", "peer-id-2": "ed25519_pk_hex"}}
+        """
+        if path is None:
+            path = os.path.join(os.path.expanduser("~"), ".atp", "gossip_trust.json")
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+            for peer_id, pk_hex in data.get("peers", {}).items():
+                pk = bytes.fromhex(pk_hex)
+                if len(pk) == 32:
+                    self._trusted_peers[peer_id] = pk
+                    logger.info("Gossip: loaded trusted peer %s from %s", peer_id, path)
+                else:
+                    logger.warning("Gossip: invalid key for %s in %s", peer_id, path)
+        except (FileNotFoundError, json.JSONDecodeError, ValueError) as exc:
+            logger.debug("Gossip: trusted peers not loaded (%s)", exc)
 
     def mark_revoked(self, serial_number: bytes):
         """Record a serial_number as revoked and prepare to gossip it."""
@@ -578,10 +653,14 @@ class GossipServer:
 
     Runs on GOSSIP_PORT (default 8444) alongside the main ATP server.
     Incoming payloads are CBOR-encoded lists of hex serial numbers.
+
+    If *gossip_proto* is provided, gossip signatures are verified against
+    the protocol's trusted peer key list (external authentication).
     """
 
-    def __init__(self, monitor=None):
+    def __init__(self, monitor=None, gossip_proto=None):
         self.monitor = monitor
+        self._gossip_proto = gossip_proto  # link to GossipProtocol for trusted keys
         self._server: Optional[asyncio.AbstractServer] = None
 
     async def start(self, host: str = "127.0.0.1", port: int = 8444):
@@ -627,10 +706,38 @@ class GossipServer:
                         sig = bytes.fromhex(sig_hex)
                         sender_pk = bytes.fromhex(sender_pk_hex)
                         payload_body = _cbor2.dumps(payload, canonical=True)
-                        if not ed25519_verify(sender_pk, sig, payload_body):
-                            logger.warning("Gossip: bad signature from %s (%s) -- ignoring", node_id, peer)
-                            return
-                        logger.debug("Gossip: verified signature from %s", node_id)
+                        # External verification: check if we have a trusted key for this node
+                        trusted_pk = None
+                        if hasattr(self, "_gossip_proto") and self._gossip_proto:
+                            trusted_pk = self._gossip_proto._trusted_peers.get(node_id)
+                        if trusted_pk is not None:
+                            # Strict mode: verify against pinned key
+                            if sender_pk != trusted_pk:
+                                logger.warning(
+                                    "Gossip: peer %s sender_pk does not match trusted key "
+                                    "(got %s, expected %s) -- rejecting",
+                                    node_id, sender_pk.hex()[:8], trusted_pk.hex()[:8],
+                                )
+                                return
+                            if not ed25519_verify(trusted_pk, sig, payload_body):
+                                logger.warning(
+                                    "Gossip: bad signature from trusted peer %s -- rejecting",
+                                    node_id,
+                                )
+                                return
+                            logger.info("Gossip: verified trusted signature from %s", node_id)
+                        else:
+                            # Best-effort: accept self-authenticated sig but log warning
+                            if not ed25519_verify(sender_pk, sig, payload_body):
+                                logger.warning(
+                                    "Gossip: bad signature from %s (%s) -- ignoring",
+                                    node_id, peer,
+                                )
+                                return
+                            logger.debug(
+                                "Gossip: accepted self-authenticated sig from %s (not in trust list)",
+                                node_id,
+                            )
                     except (ValueError, Exception) as exc:
                         logger.warning("Gossip: signature verification error from %s -- %s", peer, exc)
                         return
@@ -665,6 +772,80 @@ class GossipServer:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  Shared chain manifest verification  (used by RootStore and RootStoreSQLite)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _verify_chain_manifest_cbor(
+    signed_manifest: bytes,
+    get_authority_fn,  # callable(authority_id) -> Optional[bytes]
+) -> Optional[dict]:
+    """Parse and verify a chain manifest CBOR payload.
+
+    Shared by RootStore and RootStoreSQLite to avoid code duplication.
+
+    Returns the parsed manifest dict on success, or None if verification fails.
+    On success, the caller is responsible for persisting the new authorities.
+
+    Anti-replay (nonce, version, timestamp) must be handled by the caller
+    because the storage for these differs between backends.
+    """
+    try:
+        import cbor2 as _cbor2
+        manifest = _cbor2.loads(signed_manifest)
+        sig = manifest.pop("signature", b"")
+        if len(sig) != 64:
+            logger.warning("Chain manifest: invalid signature length")
+            return None
+        payload = _cbor2.dumps(manifest, canonical=True)
+
+        # Validate structure
+        manifest_ts = manifest.get("manifest_ts", 0)
+        now = int(time.time())
+        if manifest_ts and abs(now - manifest_ts) > 300:
+            logger.warning("Chain manifest: stale timestamp")
+            return None
+        manifest_nonce = manifest.get("manifest_nonce", b"")
+        if manifest_nonce and (not isinstance(manifest_nonce, bytes) or len(manifest_nonce) != 16):
+            logger.warning("Chain manifest: invalid nonce")
+            return None
+        manifest_version = manifest.get("rootstore_version", 0)
+        if manifest_version and not isinstance(manifest_version, int):
+            logger.warning("Chain manifest: invalid rootstore_version")
+            return None
+        authorities = manifest.get("authorities", [])
+        if not isinstance(authorities, list):
+            logger.warning("Chain manifest: authorities must be a list")
+            return None
+        for entry in authorities:
+            if (
+                not isinstance(entry, dict)
+                or not isinstance(entry.get("authority_id"), str)
+                or not isinstance(entry.get("pk"), bytes)
+                or len(entry["pk"]) != 32
+            ):
+                logger.warning("Chain manifest: invalid authority entry")
+                return None
+
+        # Find the signing authority — must already be trusted
+        signer_id = manifest.get("authority_id", "")
+        signer_pk = get_authority_fn(signer_id)
+        if signer_pk is None:
+            logger.warning("Chain manifest: signing authority %s not found", signer_id)
+            return None
+
+        # Verify signature
+        from atp_core import ed25519_verify
+        if not ed25519_verify(signer_pk, sig, payload):
+            logger.warning("Chain manifest: bad signature from %s", signer_id)
+            return None
+
+        return manifest
+    except Exception as exc:
+        logger.warning("Chain manifest verification error — %s", exc)
+        return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  Global revocation state  (singleton, thread-safe)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -695,11 +876,11 @@ def get_root_store() -> object:
     if _default_root_store is None:
         with _revocation_lock:
             if _default_root_store is None:
-                from config import ROOT_STORE_BACKEND
+                from config import ROOT_STORE_BACKEND, ROOT_STORE_PATH
                 if ROOT_STORE_BACKEND == "sqlite":
                     from revocation_sqlite import RootStoreSQLite
-                    path = os.path.join(
-                        os.path.dirname(os.path.abspath(__file__)), "root_store.db"
+                    path = ROOT_STORE_PATH or os.path.join(
+                        os.path.expanduser("~"), ".atp", "root_store.db"
                     )
                     _default_root_store = RootStoreSQLite(path=path)
                     logger.info("RootStore backend: SQLite (%s)", path)

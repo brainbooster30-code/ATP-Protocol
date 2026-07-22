@@ -1,5 +1,5 @@
 """
-ATP SDK v1.7 — SimpleATPServer
+ATP SDK v1.8 — SimpleATPServer
 
 A clean, high-level server that wraps ATPServer and ATPAgent.
 Handles TLS, MCC creation, handshake, and task dispatch automatically.
@@ -54,14 +54,18 @@ class SimpleATPServer:
         self,
         agent_name: str = "atp-sdk-server",
         monitor: Optional[Monitor] = None,
+        trust_bootstrap_mode: Optional[str] = None,
     ) -> None:
         """
         Args:
             agent_name: Human-readable name for this server agent.
             monitor: Optional Monitor instance for protocol event logging.
+            trust_bootstrap_mode: None uses config (strict by default);
+                use "tofu" only for explicit trust-on-first-use bootstrap.
         """
         self.agent_name: str = agent_name
         self.monitor: Optional[Monitor] = monitor
+        self.trust_bootstrap_mode = trust_bootstrap_mode
 
         # Rate limiter e anti-replay (dal core protocol, default None = disattivati)
         self.rate_limiter = None
@@ -205,6 +209,7 @@ class SimpleATPServer:
             task_handler=self._dispatch_task,
             rate_limiter=self.rate_limiter,
             anti_replay=self.anti_replay,
+            trust_bootstrap_mode=self.trust_bootstrap_mode,
         )
 
         try:
@@ -364,8 +369,13 @@ class SyncATPServer:
         self,
         agent_name: str = "atp-sdk-server",
         monitor: Optional[Monitor] = None,
+        trust_bootstrap_mode: Optional[str] = None,
     ) -> None:
-        self._server = SimpleATPServer(agent_name=agent_name, monitor=monitor)
+        self._server = SimpleATPServer(
+            agent_name=agent_name,
+            monitor=monitor,
+            trust_bootstrap_mode=trust_bootstrap_mode,
+        )
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[Any] = None
 

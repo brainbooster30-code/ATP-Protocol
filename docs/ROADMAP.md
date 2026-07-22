@@ -10,7 +10,7 @@
 
 ## Panoramica
 
-ATP v1.7.1 ha completato il ciclo di debug e messa in sicurezza:
+ATP v1.8 ha completato il ciclo di debug e messa in sicurezza:
 - Identità MCC con key separation
 - Mutual TLS con CA condivisa
 - Revoca distribuita con gossip TCP reale
@@ -42,16 +42,15 @@ corromperlo). Serve firma Ed25519 sul ciphertext.
 
 ### 🥇 Lotto 2 — Multi-Authority Bootstrap (Alta priorità)
 
-Due server ATP indipendenti hanno autorità diverse (`atp-mock-ca`)
-e non possono verificare le MCC dell'altro. Serve un protocollo
+Due server ATP indipendenti hanno autorità diverse (`atp-local-<hash>`)
+e non possono verificare le MCC dell'altro senza bootstrap. Serve un protocollo
 per scambiarsi i manifest del RootStore.
 
 **Task:**
-- [ ] `ROOT_STORE_UPDATE` (0x21) handler implementato in `_dispatch_frame`
-- [ ] Client pull: richiedere RootStore al peer dopo handshake
-- [ ] Server push: inviare RootStore manifest dopo capability exchange
-- [ ] Trust on first use (TOFU): accettare il RootStore del peer
-    se non se ne ha uno proprio (bootstrap)
+- [x] `ROOT_STORE_UPDATE` (0x21) handler implementato in `_dispatch_frame`
+- [x] RootStore advertisement post-handshake firmato dall'agente
+- [x] `authority-chain` accettata solo se firmata da authority gia fidata
+- [x] Trust on first use (TOFU) esplicito via `authority_pk` nel bind frame
 
 **Dipendenze:** Nessuna. Frame 0x21 già definito in FRAME_TYPES.
 
@@ -69,7 +68,7 @@ TASK_RESPONSE ora supporta `partial=true` e `sequence`:
 - [x] Server: invio chunk multipli con partial=true
 - [x] Client: accumulo chunk fino a partial=false
 - [x] E2E encryption per ogni chunk
-- [x] Test: 86 test passanti
+- [x] Test: 60 test passanti
 
 **Dipendenze:** Nessuna.
 
@@ -137,6 +136,8 @@ Miglioramenti per portare ATP a livello di produzione:
 - **Manifest anti-replay** — nonce 16B + timestamp 5min + version tracking.
 - **Idempotenza RootStore**: `add_authority` non incrementa versione se la stessa
   autorità è già registrata con la stessa chiave pubblica.
+- **RootStore runtime fuori repo**: default sotto `~/.atp/`, override con
+  `ATP_ROOT_STORE_PATH`.
 - **mTLS cert rotation** automatica con hot-reload SSL context.
 - **Circuit breaker** DeepSeek (soglia 5, reset 30s).
 
@@ -181,10 +182,10 @@ Chiusura dei 4 gap architetturali aperti dopo il ciclo v2.0:
 |-----|-----------|------|---------|
 | `import asyncio` in function body | Spostato a modulo | `atp_core.py` | −2 |
 | `check_hostname = False` | Controllato da env `ATP_ENFORCE_HOSTNAME` | `agent_tls.py` | −1/+6 |
-| Test custom runner + contaminazione singleton | Convertito a pytest (52 test, fixture isolate, conftest con reset stato globale) | `conftest.py`, `test_all.py` | −370/+340 |
+| Test custom runner + contaminazione singleton | Convertito a pytest (60 test, fixture isolate, conftest con reset stato globale) | `conftest.py`, `test_all.py` | −370/+340 |
 | `agent.py` 1873 linee monolitico | Estratti `agent_tls.py` (~250 linee TLS) e `agent_crypto.py` (E2E pure functions). Fix `utcnow()` → `now(UTC)` | `agent_tls.py`, `agent_crypto.py` | −250/+330 |
 
-**Risultato:** Score architetturale 8.8 → **9.5/10**. Tutti i 52 test passano in ~2.8s.
+**Risultato:** Score architetturale 8.8 → **9.5/10**. Tutti i 60 test passano.
 
 ---
 

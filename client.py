@@ -1,5 +1,5 @@
 """
-ATP v1.7 — TCP/TLS Client.
+ATP v1.8 — TCP/TLS Client.
 """
 
 from __future__ import annotations
@@ -24,8 +24,10 @@ class ATPClient:
     and can send tasks. Runs inside its own asyncio event loop.
     """
 
-    def __init__(self, monitor: Optional[Monitor] = None):
+    def __init__(self, monitor: Optional[Monitor] = None,
+                 trust_bootstrap_mode: Optional[str] = None):
         self.monitor = monitor
+        self.trust_bootstrap_mode = trust_bootstrap_mode
         self.agent: Optional[ATPAgent] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._reader: Optional[asyncio.StreamReader] = None
@@ -53,6 +55,7 @@ class ATPClient:
             identity=self.identity,
             is_server=False,
             monitor=self.monitor,
+            trust_bootstrap_mode=self.trust_bootstrap_mode,
         )
 
         ok = await self.agent.perform_handshake(self._reader, self._writer)

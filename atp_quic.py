@@ -1,15 +1,10 @@
 """
 ATP v1.8 — QUIC Transport Module (aioquic)
-
-Implementa QUIC server e client usando aioquic con certificati RSA 2048
-(compatibili con aioquic 1.3.0). stream_handler riceve (StreamReader,
-StreamWriter) identico a asyncio.start_server.
+ECDSA P-256 invece di RSA 2048 per performance (~100x più veloce).
 """
-
 from __future__ import annotations
 
 import asyncio
-import datetime
 import ipaddress
 import logging
 import os
@@ -17,94 +12,70 @@ import tempfile
 import time
 import ssl as ssl_module
 from typing import Optional
+from pathlib import Path
 
 from aioquic.asyncio import connect, serve
 from aioquic.quic.configuration import QuicConfiguration
-from aioquic.tls import CipherSuite
-
-from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa, ec
-from cryptography.x509.oid import NameOID
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption
 
 from config import SERVER_HOST, SERVER_PORT
 from agent import ATPAgent, AgentIdentity
+from agent_tls import get_quic_cert
 from monitor import Monitor
 
 logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  Cert persistence — RSA 2048 (aioquid 1.3 compat)
+#  Cert persistence — ECDSA P-256 (aioquic 1.3 compat)
+#  CA + node certs persist to ~/.atp/quic/ instead of tempfiles.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_quic_ca_path: Optional[str] = None
-_quic_ca_key: Optional[rsa.RSAPrivateKey] = None
-_quic_ca_cert_pem: Optional[bytes] = None
+_QUIC_CERT_DIR = os.path.join(os.path.expanduser("~"), ".atp", "quic")
 
 
-def _ensure_quic_ca() -> tuple[str, bytes, rsa.RSAPrivateKey]:
-    global _quic_ca_path, _quic_ca_key, _quic_ca_cert_pem
-    if _quic_ca_path is None:
-        import datetime as _dt
-        ca_key = rsa.generate_private_key(65537, 2048, default_backend())
-        ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "ATP QUIC CA")])
-        ca_cert = (
-            x509.CertificateBuilder()
-            .subject_name(ca_name).issuer_name(ca_name)
-            .public_key(ca_key.public_key())
-            .serial_number(x509.random_serial_number())
-            .not_valid_before(_dt.datetime.utcnow() - _dt.timedelta(days=1))
-            .not_valid_after(_dt.datetime.utcnow() + _dt.timedelta(days=365 * 10))
-            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
-            .sign(ca_key, hashes.SHA256(), default_backend())
-        )
-        _quic_ca_cert_pem = ca_cert.public_bytes(Encoding.PEM)
-        _quic_ca_key = ca_key
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pem") as f:
-            f.write(_quic_ca_cert_pem)
-            _quic_ca_path = f.name
-    return _quic_ca_path, _quic_ca_cert_pem, _quic_ca_key
+def _ensure_quic_cert_dir() -> str:
+    os.makedirs(_QUIC_CERT_DIR, exist_ok=True)
+    return _QUIC_CERT_DIR
 
 
-def _write_quic_cert(cn: str) -> tuple[str, str]:
-    import datetime as _dt
-    ca_path, ca_cert_pem, ca_key = _ensure_quic_ca()
-    ca_cert = x509.load_pem_x509_certificate(ca_cert_pem)
-    node_key = rsa.generate_private_key(65537, 2048, default_backend())
-    node_cert = (
-        x509.CertificateBuilder()
-        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)]))
-        .issuer_name(ca_cert.subject)
-        .public_key(node_key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(_dt.datetime.utcnow() - _dt.timedelta(days=1))
-        .not_valid_after(_dt.datetime.utcnow() + _dt.timedelta(days=365 * 10))
-        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
-        .add_extension(x509.SubjectAlternativeName([x509.DNSName("localhost")]), critical=False)
-        .sign(ca_key, hashes.SHA256(), default_backend())
-    )
-    cert_pem = node_cert.public_bytes(Encoding.PEM)
-    key_pem = node_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pem") as cf:
-        cf.write(cert_pem); cert_path = cf.name
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pem") as kf:
-        kf.write(key_pem); key_path = kf.name
-    return cert_path, key_path
+def _get_quic_cert_paths(cn: str) -> tuple[str, str, str]:
+    """Return (cert_path, key_path, ca_path) for a given CN.
+    Certificates are generated once and cached on disk.
+    """
+    import hashlib
+    cn_hash = hashlib.sha256(cn.encode()).hexdigest()[:16]
+    cert_dir = _ensure_quic_cert_dir()
+    ca_cert_path = os.path.join(cert_dir, "ca_cert.pem")
+    ca_key_path = os.path.join(cert_dir, "ca_key.pem")
+    cert_path = os.path.join(cert_dir, f"cert-{cn_hash}.pem")
+    key_path = os.path.join(cert_dir, f"key-{cn_hash}.pem")
+
+    if os.path.isfile(cert_path) and os.path.isfile(key_path) and os.path.isfile(ca_cert_path):
+        return cert_path, key_path, ca_cert_path
+
+    # Generate new ECDSA P-256 cert using agent_tls.get_quic_cert
+    import atexit
+    cert_pem, key_pem, ca_cert_pem = get_quic_cert(cn=cn)
+    with open(cert_path, "wb") as f:
+        f.write(cert_pem)
+    with open(key_path, "wb") as f:
+        f.write(key_pem)
+    with open(ca_cert_path, "wb") as f:
+        f.write(ca_cert_pem)
+    logger.info("QUIC cert generated (ECDSA P-256) for CN=%s", cn)
+    return cert_path, key_path, ca_cert_path
 
 
 def _make_quic_config(server_side: bool = False, cn: str = "atp-quic") -> QuicConfiguration:
-    """Build aioquic config with RSA 2048 certs.
-    Server: CERT_REQUIRED (verifica client). Client: CERT_NONE (verifica via MCC)."""
+    """Build aioquic config with ECDSA P-256 certs.
+    Server: CERT_REQUIRED (verifica client). Client: CERT_NONE (verifica via MCC).
+    """
     config = QuicConfiguration(
         alpn_protocols=["atp-v1.8"],
         is_client=not server_side,
         verify_mode=ssl_module.CERT_REQUIRED if server_side else ssl_module.CERT_NONE,
     )
-    ca_path, _, _ = _ensure_quic_ca()
+    cert_path, key_path, ca_path = _get_quic_cert_paths(cn)
     config.ca_certs = ca_path
-    cert_path, key_path = _write_quic_cert(cn)
     config.load_cert_chain(cert_path, key_path)
     return config
 
@@ -116,12 +87,15 @@ def _make_quic_config(server_side: bool = False, cn: str = "atp-quic") -> QuicCo
 class QUICServer:
     """ATP server over QUIC (RFC 9000) using aioquic."""
 
-    def __init__(self, monitor: Optional[Monitor] = None):
+    def __init__(self, monitor: Optional[Monitor] = None,
+                 trust_bootstrap_mode: Optional[str] = None):
         self.monitor = monitor
+        self.trust_bootstrap_mode = trust_bootstrap_mode
         self._server = None
         self._running = False
+        self._server_task: Optional[asyncio.Task] = None
         self.identity = AgentIdentity(agent_name="atp-quic-server")
-        self._push_root_store = False  # only enable for multi-authority deployments
+        self._push_root_store = False
 
     async def start(self, host: str = SERVER_HOST, port: int = SERVER_PORT):
         config = _make_quic_config(server_side=True, cn=f"quic-server-{host}-{port}")
@@ -131,17 +105,19 @@ class QUICServer:
             stream_handler=self._on_quic_stream,
         )
         self._running = True
-        logger.info("ATP QUIC Server listening on %s:%s (RSA 2048)", host, port)
+        logger.info("ATP QUIC Server listening on %s:%s (ECDSA P-256)", host, port)
 
     async def stop(self):
+        """Graceful stop with drain."""
         self._running = False
         if self._server:
             self._server.close()
+            # Give active connections time to drain
+            await asyncio.sleep(1)
 
     def _on_quic_stream(self, reader: asyncio.StreamReader,
                         writer: asyncio.StreamWriter):
-        """Handle one QUIC stream. aioquic calls this synchronously
-        (non-async), so we launch the handler as a background task."""
+        """Handle one QUIC stream. aioquic calls this synchronously."""
         asyncio.create_task(self._handle_quic_stream(reader, writer))
 
     async def _handle_quic_stream(self, reader: asyncio.StreamReader,
@@ -157,6 +133,7 @@ class QUICServer:
             identity=self.identity, is_server=True, monitor=self.monitor,
             task_handler=self._default_task_handler,
             rate_limiter=RateLimiter(), anti_replay=AntiReplay(),
+            trust_bootstrap_mode=self.trust_bootstrap_mode,
         )
         try:
             ok = await agent.perform_handshake(reader, writer)
@@ -189,8 +166,10 @@ class QUICServer:
 class QUICClient:
     """ATP client over QUIC (RFC 9000) using aioquic."""
 
-    def __init__(self, monitor: Optional[Monitor] = None):
+    def __init__(self, monitor: Optional[Monitor] = None,
+                 trust_bootstrap_mode: Optional[str] = None):
         self.monitor = monitor
+        self.trust_bootstrap_mode = trust_bootstrap_mode
         self.agent: Optional[ATPAgent] = None
         self._connected = False
         self._protocol = None
@@ -209,7 +188,7 @@ class QUICClient:
                 self._cm.__aenter__(), timeout=8.0
             )
             log_prefix = f"QUIC[{host}:{port}]"
-            logger.info("%s connected in %.1fs", log_prefix, time.time() - t0)
+            logger.info("%s connected in %.1fs (ECDSA P-256)", log_prefix, time.time() - t0)
             reader, writer = await asyncio.wait_for(
                 self._protocol.create_stream(), timeout=5.0
             )
@@ -221,7 +200,10 @@ class QUICClient:
             logger.error("QUIC connect failed: %s", exc)
             return False
 
-        self.agent = ATPAgent(identity=self.identity, is_server=False, monitor=self.monitor)
+        self.agent = ATPAgent(
+            identity=self.identity, is_server=False, monitor=self.monitor,
+            trust_bootstrap_mode=self.trust_bootstrap_mode,
+        )
         try:
             t1 = time.time()
             ok = await asyncio.wait_for(
@@ -243,7 +225,45 @@ class QUICClient:
         return ok
 
     async def _on_stream(self, reader, writer):
-        pass
+        """Handle a server-initiated QUIC stream (back-channel)."""
+        if not self.agent:
+            logger.warning("QUIC back-channel: no agent bound")
+            try: writer.close()
+            except Exception: pass
+            return
+        try:
+            from atp_core import decode_frame, build_header, send_frame
+            while self._connected and self.agent:
+                frame = await asyncio.wait_for(
+                    decode_frame(reader), timeout=60.0
+                )
+                if frame is None:
+                    break
+                ft = frame.get("header", {}).get("frame_type")
+                if ft == 0x21:  # ROOT_STORE_UPDATE
+                    await self.agent._handle_root_store_update(frame)
+                elif ft == 0x15:  # CONTROL_PING
+                    try:
+                        pong = {"header": build_header(0x16),
+                                "timestamp": int(time.time() * 1000)}
+                        await send_frame(writer, pong)
+                    except Exception:
+                        pass
+                elif ft == 0x20:  # ERROR
+                    logger.warning("QUIC back-channel ERROR: %s",
+                                   frame.get("error_message", ""))
+                    break
+                else:
+                    logger.debug("QUIC back-channel: ignored frame 0x%02x", ft)
+        except asyncio.TimeoutError:
+            logger.debug("QUIC back-channel: idle timeout")
+        except (ConnectionError, OSError):
+            logger.debug("QUIC back-channel: connection lost")
+        except Exception as exc:
+            logger.debug("QUIC back-channel error: %s", exc)
+        finally:
+            try: writer.close()
+            except Exception: pass
 
     async def send_task(self, task_type: str, payload: str,
                          deadline_ms: int = 30_000) -> dict:

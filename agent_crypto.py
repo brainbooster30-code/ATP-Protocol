@@ -1,5 +1,5 @@
 """
-ATP v1.7 — E2E cryptographic helpers.
+ATP v1.8 — E2E cryptographic helpers.
 Extracted from ATPAgent class in agent.py.
 Pure functions: no ATPAgent state dependency.
 """
@@ -24,7 +24,7 @@ def derive_session_key(
 ) -> Optional[bytes]:
     """Derive AES-256-GCM session key from X25519 ECDH shared secret.
 
-    Uses BLAKE3 KDF with domain separation (b"atp-v1.7-ecdh").
+    Uses BLAKE3 KDF with domain separation (b"atp-v1.8-ecdh").
     Both sides sort public keys deterministically so the derived key is identical.
 
     Returns 32-byte AES key, or None if peer key is invalid.
@@ -36,10 +36,40 @@ def derive_session_key(
         peer_pk = x25519.X25519PublicKey.from_public_bytes(peer_x25519_pk)
         shared_secret = our_sk.exchange(peer_pk)
         pk1, pk2 = sorted([peer_x25519_pk, our_x25519_pk])
-        kdf_input = b"atp-v1.7-ecdh" + shared_secret + pk1 + pk2
+        kdf_input = b"atp-v1.8-ecdh" + shared_secret + pk1 + pk2
         return blake3_hash(kdf_input)
     except Exception:
         logger.exception("ECDH key derivation failed")
+        return None
+
+
+def derive_ecdhe_session_key(
+    eph_sk: bytes,
+    peer_eph_pk: bytes,
+    eph_pk: bytes,
+) -> Optional[bytes]:
+    """Derive AES-256-GCM session key from ECDHE ephemeral shared secret.
+
+    Uses X25519 ephemeral ECDH + BLAKE3 KDF with domain separation
+    (b"atp-v1.8-ecdhe") for forward secrecy.
+
+    The ephemeral keys are exchanged during handshake Phase 3 and
+    discarded after the session ends. Compromise of static keys does
+    NOT compromise past session keys.
+
+    Returns 32-byte AES key, or None if peer key is invalid.
+    """
+    if len(peer_eph_pk) != 32 or len(eph_sk) != 32:
+        return None
+    try:
+        our_sk = x25519.X25519PrivateKey.from_private_bytes(eph_sk)
+        peer_pk = x25519.X25519PublicKey.from_public_bytes(peer_eph_pk)
+        shared_secret = our_sk.exchange(peer_pk)
+        pk1, pk2 = sorted([peer_eph_pk, eph_pk])
+        kdf_input = b"atp-v1.8-ecdhe" + shared_secret + pk1 + pk2
+        return blake3_hash(kdf_input)
+    except Exception:
+        logger.exception("ECDHE key derivation failed")
         return None
 
 

@@ -27,12 +27,12 @@ async def main():
     print()
 
     # ── 1. Start Server ──────────────────────────────────────────────────
-    server = SimpleATPServer()
+    server = SimpleATPServer(trust_bootstrap_mode="tofu")
     await server.start(port=PORT)
     print("[SERVER] Listening on port", PORT)
 
     # ── 2. Researcher Agent — queries DeepSeek ───────────────────────────
-    researcher = SimpleATPClient("researcher")
+    researcher = SimpleATPClient("researcher", trust_bootstrap_mode="tofu")
     await researcher.connect(port=PORT)
 
     question = "Quali sono le differenze fondamentali tra transformer encoder e decoder?"
@@ -43,7 +43,7 @@ async def main():
     print("  " + response[:120] + "...")
 
     # ── 3. FactChecker Agent — validates key claims ──────────────────────
-    factchecker = SimpleATPClient("factchecker")
+    factchecker = SimpleATPClient("factchecker", trust_bootstrap_mode="tofu")
     await factchecker.connect(port=PORT)
 
     claim = (
@@ -56,7 +56,7 @@ async def main():
     print(f"[FACTCHECKER] Result: {verification[:150]}...")
 
     # ── 4. Summarizer Agent — executive summary ──────────────────────────
-    summarizer = SimpleATPClient("summarizer")
+    summarizer = SimpleATPClient("summarizer", trust_bootstrap_mode="tofu")
     await summarizer.connect(port=PORT)
 
     summary_prompt = (

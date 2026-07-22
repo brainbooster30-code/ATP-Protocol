@@ -21,11 +21,11 @@ async def main():
     print("=" * 60)
     print()
 
-    server = SimpleATPServer()
+    server = SimpleATPServer(trust_bootstrap_mode="tofu")
     await server.start(port=PORT)
 
     # ── 1. Developer: generate code ──────────────────────────────────────
-    dev = SimpleATPClient("developer")
+    dev = SimpleATPClient("developer", trust_bootstrap_mode="tofu")
     await dev.connect(port=PORT)
 
     spec = "Scrivi una funzione Python che calcola il checksum SHA-256 di un file, con gestione errori e type hints."
@@ -42,7 +42,7 @@ async def main():
     print("  " + snippet[:120].replace("\n", "\n  ") + "...\n")
 
     # ── 2. Reviewer: review the code ─────────────────────────────────────
-    reviewer = SimpleATPClient("reviewer")
+    reviewer = SimpleATPClient("reviewer", trust_bootstrap_mode="tofu")
     await reviewer.connect(port=PORT)
 
     review_prompt = (
@@ -59,7 +59,7 @@ async def main():
             print(f"  {line.strip()}")
 
     # ── 3. Fixer: apply fixes ────────────────────────────────────────────
-    fixer = SimpleATPClient("fixer")
+    fixer = SimpleATPClient("fixer", trust_bootstrap_mode="tofu")
     await fixer.connect(port=PORT)
 
     fix_prompt = (
