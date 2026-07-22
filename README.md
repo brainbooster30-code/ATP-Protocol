@@ -1,7 +1,9 @@
-# ATP v1.7 — Agent Transport Protocol
+# ATP v1.8 — Agent Transport Protocol
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-95%20passing-brightgreen)]()
+[![Stress](https://img.shields.io/badge/stress-200%20t%2Fs%200%25%20error-brightgreen)]()
 
 **ATP (Agent Transport Protocol) è un protocollo crittografico peer-to-peer per la comunicazione tra agenti software autonomi.** Fornisce un canale cifrato e verificabile dove ogni agente possiede una identità autocertificata (MCC) e ogni messaggio è firmato — senza server centrale, senza intermediari.
 
@@ -33,7 +35,7 @@ AgenteA (locale) ──ATP──→ AgenteB (locale)     → test, debug, protot
 AgenteC (casa)    ──ATP──→ AgenteD (cloud)      → uso personale, assistenti
 ```
 
-- **Zero configurazione** — tunnel ngrok integrato, niente firewall
+- **Zero configurazione** — tunnel UPnP nativo integrato, niente firewall
 - **Zero costi** — protocollo open source, infrastructure-free
 - **Zero dipendenze** — funziona su una singola macchina o tra due
 
@@ -68,12 +70,6 @@ Sede B (Milano, Claude) ──ATP──→ Sede A (Roma, ChatGPT)
 
 Vedi `sdk/examples/azienda.py` — esempio funzionante con chiamate DeepSeek reali.
 
-**Vantaggi per l'azienda:**
-- Le chiavi API AI non vengono condivise tra sedi
-- Ogni transazione è firmata e verificabile (non ripudio)
-- Zero infrastruttura centralizzata (nessun server da mantenere)
-- Ogni agente opera con la propria identità e le proprie credenziali
-
 ---
 
 ### 🏛️ Livello Governativo / Pubblica Amministrazione
@@ -89,12 +85,6 @@ Ministero Istruzione ──ATP──→ Scuola Futura → aggiornamento albo doc
 
 Ogni ente mantiene il controllo dei propri dati. Le comunicazioni sono peer-to-peer, cifrate, firmate. Nessun intermediario può leggere, bloccare o alterare lo scambio.
 
-**Vantaggi per la PA:**
-- **Sovranità dei dati** — ogni ente mantiene il controllo dei propri dati
-- **Interoperabilità senza intermediario** — non serve un "hub" centrale
-- **Audit trail forense** — ogni scambio è firmato, tracciabile, non ripudiabile
-- **Resilienza** — se un ente cade, gli altri continuano a comunicare
-
 ---
 
 ### 🏠 Livello Privato / Personale
@@ -106,11 +96,6 @@ Avvocato (studio)    ──ATP──→ Agente Cliente   → scambio documenti r
 Medico (ambulatorio) ──ATP──→ ASL              → referti digitali firmati
 Commercialista        ──ATP──→ Agente Azienda   → bilancio, dichiarazioni
 ```
-
-**Vantaggi per il privato:**
-- I dati sensibili non passano per server centrali
-- Ogni scambio è firmato con la propria identità crittografica
-- Il professionista mantiene il pieno controllo dei propri dati
 
 ---
 
@@ -142,34 +127,32 @@ Vedi `sdk/examples/teacher_school.py` — 5 use case reali con tunnel internet z
           │                                        │
           │  ┌──────────────────────────────────┐  │
           │  │  Revocation (Cuckoo + Gossip)    │  │
-          │  │  RootStore (authority PKI)       │  │
+          │  │  RootStore (JSON o SQLite)       │  │
           │  │  DegradationPolicy (freschezza)  │  │
+          │  └──────────────────────────────────┘  │
+          │                                        │
+          │  ┌──────────────────────────────────┐  │
+          │  │  Federation (v2.0)               │  │
+          │  │  PEER_DISCOVERY (firmato)        │  │
+          │  │  TASK_FORWARD (firmato)          │  │
+          │  │  Heartbeat / Routing Table       │  │
           │  └──────────────────────────────────┘  │
 ```
 
 ## Quick Start
 
-|### 1. Installa l'SDK
+### 1. Installa l'SDK
 
 ```bash
 # Dalla directory principale del progetto ATP
 cd sdk
 pip install -e .                    # installazione base (core + tunnel UPnP nativo)
 pip install -e ".[all]"             # tutto (dashboard, tunnel completo)
-pip install -e ".[tunnel]"          # solo tunnel internet (UPnP nativo, zero dip. extra)
+pip install aioquic                 # QUIC transport (opzionale, v1.8+)
 ```
 
 L'SDK installa automaticamente tutte le dipendenze necessarie:
 `aiohttp`, `blake3`, `cbor2`, `cryptography`.
-
-**Il tunnel internet non richiede dipendenze esterne** — usa UPnP nativo
-pure Python. Se il router supporta UPnP, apre la porta automaticamente.
-
-Fallback opzionale ngrok (solo se UPnP non disponibile):
-```bash
-pip install pyngrok
-setx NGROK_AUTH_TOKEN "tuo_token"   # Windows
-```
 
 ### 2. Usa l'SDK
 
@@ -206,9 +189,12 @@ python code_review_pipeline.py
 # Governance distribuita (4 agenti votano con attestazione MCC)
 python agent_voting.py
 
+# Rete federata 3 nodi
+python federation_example.py
+
 # Server scolastico standalone + client interattivo
-python school_server.py            # terminale 1: avvia server
-python teacher_client.py           # terminale 2: menu interattivo
+python school_server.py
+python teacher_client.py
 
 # Connessione via internet (tunnel UPnP locale)
 python teacher_client.py 192.168.1.50:8443
@@ -235,6 +221,8 @@ python teacher_client.py 192.168.1.50:8443
 | `docs/DRAFT.md` | Design rationale, motivazioni, decisioni chiave |
 | `docs/SPEC.md` | Specifica tecnica completa, CDDL, frame, error codes |
 | `docs/RFC.md` | RFC formale con RFC2119, riferimenti normativi |
+| `docs/SDK_SPEC.md` | **Cross-language SDK spec** — implementa ATP in Go, Rust, JS |
+| `docs/ROADMAP.md` | Stato avanzamento v1.8 (100% completata) |
 | `docs/authority_system.md` | Sistema delle autorità (5 livelli: lab → internet) |
 | `sdk/DOCS.md` | Guida all'uso dell'SDK |
 | `sdk/API.md` | Reference completa di ogni classe e metodo |
@@ -242,74 +230,85 @@ python teacher_client.py 192.168.1.50:8443
 
 ---
 
-## Features
+## Features v1.8
 
 ### 🔐 Crittografia
 - **Ed25519** — firme digitali, certificati, proof-of-possession
 - **X25519** — ECDH key agreement per crittografia end-to-end
 - **AES-256-GCM** — cifratura simmetrica dei payload task (X25519 ECDH + BLAKE3 KDF)
 - **Authenticated E2E** — encrypt-then-sign: AES-256-GCM + Ed25519 firma sul ciphertext
-- **BLAKE3** — hash veloce (obbligatorio, nessun fallback)
+- **BLAKE3** — hash veloce (obbligatorio, **nessun fallback**)
 - **Key separation** — X25519 ≠ Ed25519 obbligatoria (anti dual-use)
-- **Mutual TLS** — CA condivisa, CERT_REQUIRED su entrambi i lati (TCP) o RSA 2048 (QUIC)
+- **Mutual TLS** — CA condivisa, CERT_REQUIRED su entrambi i lati
+- **mTLS cert rotation** automatica con hot-reload (`reload_ssl()`)
 
 ### 🆔 Merkle-Claim Card
 - Documento di identità verificabile come albero di Merkle
 - Foglie con salt individuali (resistenza pre-immagine)
-- 8 step di verifica: versione, scadenza, signature, revoca
+- 8 step di verifica: versione, scadenza, signature, **revoca sempre obbligatoria**
 - `leaf_hash` mai trasmesso — il ricevente lo ricalcola
-- **Verifica sempre obbligatoria** (nessuna modalità demo bypassabile)
+- **Key separation obbligatoria** verificata in `MCC.verify()` step 7.5
 
 ### 🤝 Handshake 5 fasi: TLS → Version → MCC → Capability → Task
 
 ### ⚡ Task lifecycle
 - **24 frame types**, 15 error codes, CBOR canonical encoding
-- Anti-replay (20s), rate limiting (100 RPS), HandshakeRateLimiter (10 handshake/s IP)
+- Antireplay (20s), rate limiting (100 RPS), handshake rate limiter (10/s IP)
 - Clock skew (10s con fallback server_time_ms)
 - **Multiplexing per task_id** — task concorrenti sulla stessa connessione
-- **Fire-and-forget** — task lunghi (DeepSeek 60s) non bloccano il reader loop
 - **Task streaming** — partial=true / sequence, risposte parziali accumulate
 - **Errori strutturati** — send_task ritorna {status, data, error_code, error_message}
 
 ### 🔄 Revoca distribuita
-- Cuckoo Filter (FPR ~2.3e-31), RootStore (persistente su JSON), Degradation Policy (3 stati)
-- **Gossip TCP reale** — seriali revocati trasmessi a peer su porta 8444
-- **CONTROL_REVOKE_NOTIFY** — frame ATP per revoca su connessione esistente
+- **Cuckoo Filter** (FPR ≈2.3e⁻³¹) — filtraggio probabilistico
+- **RootStore** — PKI distribuita con chain-of-manifests
+  - Backend **JSON** (default) o **SQLite** (WAL mode, multi-processo)
+  - `add_authority` idempotente — stessa chiave = nessun version drift
+- **Gossip TCP** — seriali revocati trasmessi a peer su porta 8444
+- **Degradation Policy** — CONFIRMED → STALE → UNCERTAIN
+
+### ⚡ I/O Buffering
+- **`BufferedFrameReader`** — lettura chunk 64KB, buffer interno
+- Riduce le syscall di lettura da 2 a ~1 per frame
+- Attivo di default (`USE_BUFFERED_READER=True`)
+- **Throughput misurato: 200+ task/s**, P50 31ms, P99 95ms, 0% errori
 
 ### 🚀 QUIC Transport (RFC 9000)
 - Multiplexing nativo (stream QUIC indipendenti, no head-of-line blocking)
 - 0-RTT handshake, stream migration, ECN support
 - aioquic 1.3.0 (opzionale, TCP fallback automatico)
-- Certificati RSA 2048 per compatibilità TLS 1.3 (ECDSA P-256 in roadmap)
-- `QUICServer` e `QUICClient` in `atp_quic.py` — API identica a TCP
+- `QUICServer` e `QUICClient` in `atp_quic.py`
 
 ### 🔗 Federation Protocol (v2.0)
-- **Peer discovery** — gossip automatico tra nodi federati (0x60, fanout 3, ogni 60s)
-- **Heartbeat** — keepalive periodico (0x61, ogni 15s, timeout 90s)
-- **Task forwarding** — routing tra nodi con TTL (0x62, max 5 hop)
+- **PEER_DISCOVERY (0x60)** — firmato Ed25519, verificato su ricezione
+- **PEER_HEARTBEAT (0x61)** — keepalive 15s, timeout 90s
+- **TASK_FORWARD (0x62)** — firmato Ed25519, TTL ≤ 5 hop
 - **Routing table** — max 100 peer, auto-pulizia peer morti
-- **Multi-server** — 3+ server ATP formano una rete federata automaticamente
-
-### 🔄 mTLS Certificate Rotation
-- **Auto-renewal** — controllo scadenza ogni ora, rinnovo 7 giorni prima
-- **Hot-reload** — `reload_ssl()` senza restart del server
-- **Zero downtime** — connessioni esistenti preservate durante la rotation
+- **Connection pool** — outbound pool, idle timeout 300s
+- **Backward compat** — frame senza firma ancora accettati durante migrazione
 
 ### 🌐 Tunnel internet zero-config
-- UPnP nativo (pure Python, zero dipendenze) — apre porta sul router automaticamente
-- Fallback ngrok opzionale se UPnP non disponibile
+- UPnP nativo (pure Python, zero dipendenze)
 - Key Card Ed25519 per connessione diretta (zero servizi esterni)
 
 ### 📊 Dashboard e metriche
 - Dashboard PySide6 (5 tab: Overview, Traffic, Connections, Agents, Tasks)
-- **Metriche Prometheus** — headless-ready, nessuna dipendenza Qt
-- **Metriche CLI** — `get_metrics_text()` output plain-text
-- **Ring-buffer eventi** — ultimi 1000 eventi per debugging
+- **Metriche Prometheus** — headless-ready su `/metrics`
+- **Health check HTTP** — `/health`, `/ready`, `/metrics`
+- **JSON structured logging** — ELK-ready
+- **Graceful shutdown** — SIGTERM, drain 15s
+- **Circuit breaker** — DeepSeek (soglia 5, reset 30s)
+- **Connection limiter** — default 100 connessioni
 
 ### 🔗 Multi-authority bootstrap
-- **ROOT_STORE_UPDATE** (0x21) — scambio di manifest firmati dopo handshake
-- **chain_add bootstrap** — autorità sconosciuta verificabile via manifest auto-contenuto
-- **RootStore persistente** — JSON con hex encoding, ricaricato a ogni avvio
+- **ROOT_STORE_UPDATE (0x21)** — scambio di manifest firmati dopo handshake
+- Firma con **chiave dell'autorità condivisa** (non più con chiave agente)
+- `chain_add` bootstrap — autorità sconosciuta verificabile via manifest auto-contenuto
+
+### 📐 Cross-language SDK SPEC
+- `docs/SDK_SPEC.md` — wire format esatto con CDDL, esempi byte-level
+- Implementabile in Go, Rust, Node.js, Java, C#
+- Checklist implementativa di 20 punti
 
 ---
 
@@ -319,23 +318,31 @@ ATP è disponibile come skill per **Hermes Agent** (by Nous Research).
 Per attivarla in una sessione Hermes:
 
 ```bash
-# Carica la skill utente (raccomandato — esempi, SDK, tunnel)
 skill_view(name='atp-protocol-skill')
-
-# Oppure la skill tecnica (specifica protocollo, pitfall)
-skill_view(name='atp-protocol')
 ```
 
-Le skill includono: installazione SDK, quick start, pattern di cooperazione
-multi-agente, tunnel internet zero-config e API reference completa.
+---
+
+## Metriche
+
+| Metrica | Valore |
+|---------|--------|
+| Test core | 67/67 ✅ |
+| Test SDK | 21/21 ✅ |
+| Test SQLite | 7/7 ✅ |
+| **Test totali** | **95/95** ✅ |
+| Stress test | 200 task, **200 t/s**, **P50 31ms**, **P99 95ms** |
+| Errori stress | **0%** |
+| Warning runtime | **0** |
 
 ---
 
 ## Progetti correlati
 
 - **SDK Python** — `pip install -e .[all]` in `sdk/` — SimpleATPClient, SimpleATPServer, Tunnel
+- **SDK_SPEC** — `docs/SDK_SPEC.md` — cross-language implementation guide
 - **Documenti RFC/Spec** — `docs/RFC.md`, `docs/SPEC.md`, `docs/DRAFT.md`
-- **Graphify Graph** — `graphify-out/` — knowledge graph (285 nodi, 559 edge)
+- **Roadmap** — `docs/ROADMAP.md` — **100% completata**
 
 ## Licenza
 

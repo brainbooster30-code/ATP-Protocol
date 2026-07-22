@@ -1,6 +1,6 @@
-# ATP SDK v1.7 — Documentation
+# ATP SDK v1.8 — Documentation
 
-Python SDK per il protocollo ATP (Agent Transport Protocol). Connette agenti AI
+Python SDK per il protocollo ATP (Agent Transport Protocol) v1.8. Connette agenti AI
 in reti federate sicure in poche righe di codice.
 
 ## Installazione
@@ -337,6 +337,75 @@ server.start(port=8443)
 # ... il server gira in un thread daemon ...
 server.stop()
 ```
+
+---
+
+## Federation (v2.0)
+
+La federazione ATP permette a 3+ server di formare una rete. Ogni nodo
+scopre automaticamente gli altri via gossip ed è in grado di inoltrare
+task attraverso la rete con TTL (max 5 hop).
+
+### Come attivarla
+
+La federazione è **attiva di default** su `ATPServer`. Ogni server avvia
+automaticamente:
+
+- `PeerDiscovery` — gossip PEER_DISCOVERY ogni 60s, fanout 3
+- `HeartbeatManager` — PEER_HEARTBEAT ogni 15s, timeout 90s
+- `FederationRouter` — routing table, max 100 peer, eviction automatica
+
+I frame PEER_DISCOVERY (0x60) e TASK_FORWARD (0x62) sono **firmati Ed25519**
+dal mittente. Il ricevente verifica la firma usando la chiave pubblica
+dell'MCC ottenuta durante l'handshake. Frame senza firma sono accettati
+durante la migrazione (backward compat).
+
+### Connessioni federate
+
+Per connettere due server ATP in federazione:
+
+```python
+from client import ATPClient
+from atp_core import build_header, ed25519_sign
+import cbor2
+
+# Connetti alpha → beta
+cli = ATPClient()
+await cli.connect("127.0.0.1", 18951)
+
+# Invia PEER_DISCOVERY firmato
+peers = [{"peer_id": "node-alpha", "host": "127.0.0.1", "port": 18950,
+          "ed25519_pk": alpha_ed25519_pk, "capabilities": []}]
+payload = cbor2.dumps({"node_id": "node-alpha", "peers": peers}, canonical=True)
+sig = ed25519_sign(cli.agent.identity.ed25519_sk, payload)
+disc = {"header": build_header(0x60), "peers": peers,
+        "node_id": "node-alpha", "signature": sig}
+await cli.agent._send_frame(disc)
+```
+
+### Task forwarding
+
+Inviando un TASK_FORWARD (0x62) firmato, il task viene inoltrato
+attraverso la rete fino al nodo target (entro il TTL):
+
+```python
+inner = {"header": build_header(0x01), "task_type": "echo",
+         "task_payload": b"hello", "deadline_ms": 5000}
+fwd_payload = cbor2.dumps({
+    "target_peer_id": "node-gamma", "ttl": 5,
+    "task_frame": inner, "forwarder_id": my_name,
+}, canonical=True)
+fwd_sig = ed25519_sign(my_sk, fwd_payload)
+fwd = {"header": build_header(0x62), "target_peer_id": "node-gamma",
+       "ttl": 5, "task_frame": inner, "signature": fwd_sig,
+       "forwarder_id": my_name}
+await cli.agent._send_frame(fwd)
+```
+
+### Esempio completo
+
+Vedi `sdk/examples/federation_example.py` — 3 nodi, peer discovery,
+task forwarding con connection pool.
 
 ---
 

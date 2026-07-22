@@ -17,31 +17,13 @@ if _project_root not in sys.path:
 from PySide6.QtWidgets import QApplication
 from monitor import Monitor, MonitorSignals
 from dashboard import MainWindow
-
-
-def setup_logging():
-    """Configure logging to file and console."""
-    log_dir = os.path.join(_project_root, "logs")
-    os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, "atp.log")
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        handlers=[
-            logging.FileHandler(log_file, mode="a", encoding="utf-8"),
-            logging.StreamHandler(sys.stdout),
-        ],
-    )
-    logging.getLogger("asyncio").setLevel(logging.ERROR)
-    logging.getLogger("matplotlib").setLevel(logging.WARNING)
-    logging.getLogger("cbor2").setLevel(logging.WARNING)
-
-    return logging.getLogger(__name__)
+from production import setup_logging
 
 
 def main():
-    logger = setup_logging()
+    # Use production JSON logging — single source of truth for log config.
+    setup_logging()
+    logger = logging.getLogger(__name__)
     logger.info("=" * 60)
     logger.info("ATP v1.7 Dashboard starting...")
     logger.info("=" * 60)

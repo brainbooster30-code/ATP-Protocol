@@ -1,8 +1,8 @@
-# ATP SDK v1.7
+# ATP SDK v1.8
 
 **Easy-to-use Python SDK for the Agent Transfer Protocol.**
 
-Build federated AI-agent networks in just a few lines of code. The SDK wraps the full ATP v1.7 protocol — TLS, MCC (Merkle-Claim Card), identity binding, handshake, and task dispatch — behind a clean, minimal API.
+Build federated AI-agent networks in just a few lines of code. The SDK wraps the full ATP v1.8 protocol — TLS, MCC (Merkle-Claim Card), identity binding, handshake, task dispatch, federation, and revocation — behind a clean, minimal API.
 
 ## Features
 
@@ -10,6 +10,7 @@ Build federated AI-agent networks in just a few lines of code. The SDK wraps the
 - 🤖 **DeepSeek integration** — send chat prompts via `client.chat("prompt")`
 - 🧩 **Custom task handlers** — register handlers with `@server.on_task("name")`
 - ⚡ **Async + Sync APIs** — `SimpleATPClient` (async) + `SyncATPClient` (sync)
+- 🔗 **Federation built-in** — multi-node networks, signed peer discovery, task forwarding
 - 🔌 **Context managers** — `async with` / `with` for automatic cleanup
 - 📦 **Pip-installable** — `pip install -e .`
 
@@ -140,6 +141,9 @@ python examples/basic_chat.py
 
 # Multi-agent: custom handlers, multiple clients
 python examples/multi_agent.py
+
+# Federation: 3-node network with peer discovery
+python examples/federation_example.py
 ```
 
 ## Architecture
@@ -160,7 +164,8 @@ python examples/multi_agent.py
 │  ┌──────────────────────────────────┐  │
 │  │ agent  │ client │ server         │  │
 │  │ atp_core │ config │ authority    │  │
-│  │ monitor │ revocation            │  │
+│  │ monitor │ revocation │ federation│  │
+│  │ atp_quic │ production            │  │
 │  └──────────────────────────────────┘  │
 └────────────────────────────────────────┘
 ```
@@ -171,24 +176,26 @@ The SDK imports from the parent ATP project by adding it to `sys.path` — no co
 
 - Python ≥ 3.10
 - `aiohttp` ≥ 3.8 (HTTP client for DeepSeek API)
-- `blake3` ≥ 0.3 (cryptographic hashing, falls back to BLAKE2b)
+- `blake3` ≥ 0.3 (cryptographic hashing — **required, no fallback**)
 - `cbor2` ≥ 5.4 (frame encoding)
 - `cryptography` ≥ 41.0 (TLS, key generation, Ed25519/X25519)
 
-Optional for dashboard:
-- `PySide6` ≥ 6.5
-- `matplotlib` ≥ 3.7
+Optional:
+- `PySide6` ≥ 6.5 + `matplotlib` ≥ 3.7 (dashboard)
+- `aioquic` ≥ 1.3.0 (QUIC transport)
 
 All dependencies are installed automatically via `pip install -e .[all]`
 
 ## Protocol
 
-ATP v1.7 — Agent Transfer Protocol. A cryptographic protocol for secure, verifiable communication between AI agents. Features include:
+ATP v1.8 — Agent Transfer Protocol. A cryptographic protocol for secure, verifiable communication between AI agents. Features include:
 
 - **MCC** (Merkle-Claim Card) — verifiable identity credentials
-- **5-phase handshake** — version negotiation, MCC exchange, identity binding, capability exchange
-- **Task lifecycle** — request → ack → response, with deadlines and error handling
-- **Revocation** — Cuckoo filter-based certificate revocation
+- **5-phase handshake** — version → MCC → binding → capability → tasks
+- **Task lifecycle** — request → ack → response, multiplexed, with E2E encryption
+- **Revocation** — Cuckoo filter + RootStore + gossip + degradation policy
+- **Federation** — multi-node peer discovery + task forwarding (Ed25519 signed)
+- **QUIC transport** — optional RFC 9000 support via aioquic
 - **DeepSeek integration** — built-in support for DeepSeek chat model
 
 ## License

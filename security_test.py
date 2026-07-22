@@ -270,14 +270,15 @@ test("Fresh MCC passes revoked check",
      fresh_mcc.verify(auth.public_key, check_revoked=True))
 
 # 6.4 RootStore authority expiry
-rs = RootStore()
+import tempfile as _tf
+rs = RootStore(path=_tf.mktemp(suffix='.json'))
 rs.add_authority("test-ca", b"pk" * 16, ttl_seconds=-1)
 test("Authority with negative TTL expires immediately",
      rs.get_authority("test-ca") is None)
 
 # 6.5 Degradation policy
 dp = DegradationPolicy(active=True)
-rs2 = RootStore()
+rs2 = RootStore(path=_tf.mktemp(suffix='.json'))
 rs2.add_authority("live-ca", b"pk" * 16, ttl_seconds=86400*365)
 test("Active CA → CONFIRMED", dp.evaluate("live-ca", rs2) == "CONFIRMED")
 test("Unknown CA → UNCERTAIN", dp.evaluate("unknown", rs2) == "UNCERTAIN")

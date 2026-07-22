@@ -48,14 +48,20 @@ class ATPServer:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._running = False
         self.identity = AgentIdentity(agent_name="atp-server")
+        self._agents: list[ATPAgent] = []  # tracked for federation broadcasts
         self._conn_limiter = conn_limiter or ConnectionLimiter(max_conns=MAX_CONCURRENT_CONNS)
         self._shutdown = shutdown or GracefulShutdown()
         self._health = health
 
     async def start(self, host: str = SERVER_HOST, port: int = SERVER_PORT,
-                    block: bool = True):
+                    block: bool = True, health_port: int = None):
         """Start the TCP/TLS server, gossip, health checks — ready for production.
-        If block=False, returns immediately after startup (for tests)."""
+        If block=False, returns immediately after startup (for tests).
+        health_port: custom HTTP health check port (default: HEALTH_CHECK_PORT).
+                      Override for multi-server demos to avoid port conflict."""
+        if health_port is None:
+            from config import HEALTH_CHECK_PORT
+            health_port = HEALTH_CHECK_PORT
         self._loop = asyncio.get_running_loop()
 
         # Structured logging
@@ -79,7 +85,8 @@ class ATPServer:
 
         # Health check endpoint
         if self._health is None:
-            self._health = HealthCheckServer(conn_limiter=self._conn_limiter)
+            self._health = HealthCheckServer(port=health_port,
+                                             conn_limiter=self._conn_limiter)
         health_task = asyncio.create_task(self._health.start())
         if block:
             self._shutdown.track(health_task)
@@ -110,7 +117,7 @@ class ATPServer:
         self._fed_heartbeat = HeartbeatManager(self._fed_router)
         self._fed_discovery = PeerDiscovery(self._fed_router)
         fed_hb = asyncio.create_task(self._fed_heartbeat.loop())
-        fed_disc = asyncio.create_task(self._fed_discovery.loop(agent=None))
+        fed_disc = asyncio.create_task(self._fed_discovery.loop())
         if block:
             self._shutdown.track(fed_hb)
             self._shutdown.track(fed_disc)
@@ -211,6 +218,12 @@ class ATPServer:
                 if ok:
                     if hasattr(ATPServer, "_hs_limiter"):
                         ATPServer._hs_limiter.reset(str(peer_ip))
+                    # Track agent for federation broadcasts
+                    self._agents.append(agent)
+                    if hasattr(self, "_fed_discovery"):
+                        self._fed_discovery.add_peer_agent(agent)
+                    if hasattr(self, "_fed_heartbeat"):
+                        self._fed_heartbeat.add_peer_agent(agent)
                     await agent.handle_task_loop()
             except Exception as exc:
                 logger.exception("Connection handler error")
@@ -220,6 +233,15 @@ class ATPServer:
                         "error_message": str(exc),
                     })
             finally:
+                # Untrack agent before closing
+                try:
+                    self._agents.remove(agent)
+                except ValueError:
+                    pass
+                if hasattr(self, "_fed_discovery"):
+                    self._fed_discovery.remove_peer_agent(agent)
+                if hasattr(self, "_fed_heartbeat"):
+                    self._fed_heartbeat.remove_peer_agent(agent)
                 await agent.close_async()
                 try:
                     writer.close()

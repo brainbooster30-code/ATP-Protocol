@@ -77,7 +77,9 @@ def get_deepseek_api_key() -> str:
 # ── Event ring-buffer ─────────────────────────────────────────────────────────
 MONITOR_EVENT_LIMIT = 1000
 
-# ── Rate Limiter / Anti-Replay / Handshake Limiter ──────────────────────────────
+# ── Rate Limiter / Anti-Replay / Handshake Limiter / Buffered I/O / RootStore ──
+USE_BUFFERED_READER = True  # BufferedFrameReader per >500 t/s
+ROOT_STORE_BACKEND = "json"  # "json" o "sqlite"
 import asyncio, time, collections
 
 class RateLimiter:

@@ -32,6 +32,7 @@ FED_MAX_TASK_TTL = 5               # max hop count per TASK_FORWARD
 FED_PEER_TIMEOUT_S = 90            # dopo quanto un peer è considerato morto
 FED_MAX_PEERS_TRACKED = 100        # cap massimo nella routing table
 FED_PORT = 8450                    # porta TCP per connessioni federate
+FED_POOL_IDLE_TIMEOUT = 300        # secondi prima di chiudere una connessione outbound in pool
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -82,6 +83,9 @@ class FederationRouter:
         self._peers: dict[str, PeerRecord] = {}       # peer_id → PeerRecord
         self._peers_lock = asyncio.Lock()
         self._forward_hops: deque = deque(maxlen=100)  # recent forward attempts
+        # Outbound connection pool for task forwarding
+        self._outbound_pool: dict[str, tuple] = {}    # "host:port" → (ATPClient, last_used_ts)
+        self._pool_lock = asyncio.Lock()
 
     @property
     def peer_count(self) -> int:
@@ -124,17 +128,83 @@ class FederationRouter:
         peers = await self.get_live_peers()
         return [p.to_dict() for p in peers[:FED_DISCOVERY_FANOUT]]
 
-    async def forward_task(self, task: dict, ttl: int = FED_MAX_TASK_TTL) -> bool:
-        """Forward a TASK_FORWARD frame to the best peer matching the target.
-        Returns True if forwarded, False if no route found."""
+    async def forward_task(self, task: dict, ttl: int = FED_MAX_TASK_TTL) -> Optional[PeerRecord]:
+        """Find the best peer to forward a TASK_FORWARD frame to.
+
+        Looks up *target_peer_id* in the routing table and returns the
+        PeerRecord if the peer is alive and *ttl > 0*.  Returns *None*
+        when no route is available — the caller should drop the frame.
+
+        The caller is responsible for opening a connection and sending
+        the TASK_FORWARD frame to the returned PeerRecord's host:port.
+        """
         if ttl <= 0:
-            return False  # TTL exhausted
+            return None
         target_id = task.get("target_peer_id", "")
+        if not target_id:
+            return None
         async with self._peers_lock:
-            if target_id and target_id in self._peers:
-                return True  # route exists
-            # Broadcast to all live peers if no specific target
-            return len([p for p in self._peers.values() if p.is_alive]) > 0
+            peer = self._peers.get(target_id)
+            if peer is None or not peer.is_alive:
+                return None
+            return peer
+
+    # ── Outbound connection pool ────────────────────────────────────
+
+    async def get_outbound_connection(self, host: str, port: int):
+        """Get a cached outbound connection or create a new one.
+
+        Returns an ATPClient whose *agent* is ready to send frames.
+        The caller MUST call *return_connection* when done so the
+        connection is returned to the pool instead of being closed.
+        """
+        from client import ATPClient
+        key = f"{host}:{port}"
+        async with self._pool_lock:
+            entry = self._outbound_pool.get(key)
+            if entry is not None:
+                client, _ = entry
+                if client.agent and client.agent._writer:
+                    # Connection still alive
+                    self._outbound_pool[key] = (client, time.time())
+                    return client
+                # Dead entry — discard
+                del self._outbound_pool[key]
+
+        # Create new connection
+        client = ATPClient()
+        ok = await client.connect(host, port)
+        if not ok:
+            return None
+        async with self._pool_lock:
+            self._outbound_pool[key] = (client, time.time())
+        return client
+
+    async def return_connection(self, host: str, port: int):
+        """Return a connection to the pool (no-op — managed by get_outbound_connection).
+
+        Call this in a finally block after using a pooled connection.
+        The pool keeps the connection alive; it will be cleaned up
+        by *cleanup_pool* after the idle timeout.
+        """
+        pass  # connection is already stored in pool
+
+    async def cleanup_pool(self):
+        """Close and remove idle connections from the pool."""
+        now = time.time()
+        async with self._pool_lock:
+            dead_keys = []
+            for key, (client, last_used) in self._outbound_pool.items():
+                if now - last_used > FED_POOL_IDLE_TIMEOUT:
+                    try:
+                        await client.disconnect()
+                    except Exception:
+                        pass
+                    dead_keys.append(key)
+            for k in dead_keys:
+                del self._outbound_pool[k]
+            if dead_keys:
+                logger.debug("Federation: pool cleanup — closed %d idle connections", len(dead_keys))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -142,26 +212,57 @@ class FederationRouter:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class HeartbeatManager:
-    """Periodic heartbeat verso peer connessi per mantenere la routing table fresca."""
+    """Periodic heartbeat verso peer connessi per mantenere la routing table fresca.
+
+    Invia PEER_HEARTBEAT (0x61) a ogni agente connesso.  Il ricevente
+    aggiorna last_seen nella routing table (gestito in _dispatch_frame).
+    """
 
     def __init__(self, router: FederationRouter, interval_s: float = FED_HEARTBEAT_INTERVAL_S):
         self._router = router
         self._interval = interval_s
         self._running = False
+        # Connected agents to heartbeat (populated by ATPServer)
+        self._peer_agents: list = []  # list of ATPAgent references
+
+    def add_peer_agent(self, agent):
+        """Register a connected agent for heartbeat."""
+        if agent not in self._peer_agents:
+            self._peer_agents.append(agent)
+
+    def remove_peer_agent(self, agent):
+        """Unregister a disconnected agent."""
+        try:
+            self._peer_agents.remove(agent)
+        except ValueError:
+            pass
 
     async def loop(self):
-        """Send HEARTBEAT to connected peers periodically."""
+        """Send PEER_HEARTBEAT to connected peers and prune dead ones."""
         self._running = True
         while self._running:
             await asyncio.sleep(self._interval)
             try:
-                peers = await self._router.get_live_peers()
-                logger.debug("Federation: heartbeat — %d live peers", len(peers))
-                # Prune dead peers
+                # Prune dead peers from routing table
                 async with self._router._peers_lock:
                     dead = [k for k, v in self._router._peers.items() if not v.is_alive]
                     for k in dead:
                         del self._router._peers[k]
+
+                # Send heartbeat to all connected agents
+                frame = {
+                    "header": build_header(0x61),
+                    "node_id": self._router.node_id,
+                    "timestamp": int(time.time()),
+                }
+                agents = list(self._peer_agents)
+                for agent in agents:
+                    try:
+                        await agent._send_frame(frame)
+                    except Exception:
+                        pass  # best-effort heartbeat
+                if agents:
+                    logger.debug("Federation: heartbeat sent to %d agents", len(agents))
             except Exception as exc:
                 logger.debug("Federation: heartbeat error — %s", exc)
 
@@ -183,35 +284,58 @@ class PeerDiscovery:
         self._interval = interval_s
         self._fanout = fanout
         self._running = False
-        # Queue of peers we want to talk to (populated by the server)
-        self._discovery_targets: list = []  # list of (reader, writer) pairs
+        # Connected agents to broadcast to (populated by ATPServer)
+        self._peer_agents: list = []  # list of ATPAgent references
 
-    def set_targets(self, targets: list):
-        """Update the list of connected ATP peers for gossip."""
-        self._discovery_targets = list(targets)
+    def add_peer_agent(self, agent):
+        """Register a connected agent for PEER_DISCOVERY broadcasts."""
+        if agent not in self._peer_agents:
+            self._peer_agents.append(agent)
+
+    def remove_peer_agent(self, agent):
+        """Unregister a disconnected agent."""
+        try:
+            self._peer_agents.remove(agent)
+        except ValueError:
+            pass
 
     async def broadcast_peer_list(self, agent):
-        """Send PEER_DISCOVERY with our peer list to connected federation peers."""
+        """Send PEER_DISCOVERY with our peer list to a connected federation peer.
+        
+        The frame is Ed25519-signed by the sender for authenticity.
+        """
         peer_list = await self._router.get_peer_list()
         if not peer_list:
             return
+        # Add Ed25519 signature for authenticity
+        from atp_core import ed25519_sign
+        import cbor2 as _cbor2
+        payload = _cbor2.dumps(
+            {"node_id": self._router.node_id, "peers": peer_list},
+            canonical=True,
+        )
+        sig = ed25519_sign(agent.identity.ed25519_sk, payload)
         frame = {
             "header": build_header(0x60),
             "peers": peer_list,
             "node_id": self._router.node_id,
+            "signature": sig,
         }
         await agent._send_frame(frame)
-        logger.debug("Federation: broadcast peer list (%d peers)", len(peer_list))
+        logger.debug("Federation: broadcast peer list (%d peers) signed", len(peer_list))
 
-    async def loop(self, agent):
-        """Periodically gossip peer list to connected peers."""
+    async def loop(self):
+        """Periodically gossip peer list to all connected federation peers."""
         self._running = True
         while self._running:
             await asyncio.sleep(self._interval)
-            try:
-                await self.broadcast_peer_list(agent)
-            except Exception as exc:
-                logger.debug("Federation: discovery error — %s", exc)
+            # Snapshot the list to avoid mutation during iteration
+            agents = list(self._peer_agents)
+            for agent in agents:
+                try:
+                    await self.broadcast_peer_list(agent)
+                except Exception as exc:
+                    logger.debug("Federation: discovery broadcast error — %s", exc)
 
     def stop(self):
         self._running = False

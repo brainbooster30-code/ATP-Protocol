@@ -44,15 +44,15 @@ async def main():
 
     # Isolate gossip ports
     config.GOSSIP_PORT = GOS_A
-    t_a = asyncio.create_task(srv_a.start("127.0.0.1", ATP_A, block=False))
+    t_a = asyncio.create_task(srv_a.start("127.0.0.1", ATP_A, block=False, health_port=HC_A))
     await asyncio.sleep(0.5)
 
     config.GOSSIP_PORT = GOS_B
-    t_b = asyncio.create_task(srv_b.start("127.0.0.1", ATP_B, block=False))
+    t_b = asyncio.create_task(srv_b.start("127.0.0.1", ATP_B, block=False, health_port=HC_B))
     await asyncio.sleep(0.3)
 
     config.GOSSIP_PORT = GOS_C
-    t_c = asyncio.create_task(srv_c.start("127.0.0.1", ATP_C, block=False))
+    t_c = asyncio.create_task(srv_c.start("127.0.0.1", ATP_C, block=False, health_port=HC_C))
     await asyncio.sleep(0.3)
 
     # Restore original gossip port
@@ -67,15 +67,22 @@ async def main():
     ok_ab = await cli_ab.connect("127.0.0.1", ATP_B)
     test_fed("A → B handshake", ok_ab)
     if ok_ab:
-        # Manual peer discovery: send PEER_DISCOVERY to B
-        from atp_core import build_header
+        # Manual peer discovery: send signed PEER_DISCOVERY to B
+        from atp_core import build_header, ed25519_sign
+        import cbor2 as _cbor2
+        peers_a = [
+            {"peer_id": "node-alpha", "host": "127.0.0.1", "port": ATP_A,
+             "ed25519_pk": srv_a.identity.ed25519_pk, "capabilities": []},
+        ]
+        disc_payload = _cbor2.dumps(
+            {"node_id": "node-alpha", "peers": peers_a}, canonical=True
+        )
+        disc_sig = ed25519_sign(cli_ab.agent.identity.ed25519_sk, disc_payload)
         disc_a = {
             "header": build_header(0x60),
-            "peers": [
-                {"peer_id": "node-alpha", "host": "127.0.0.1", "port": ATP_A,
-                 "ed25519_pk": srv_a.identity.ed25519_pk, "capabilities": []},
-            ],
+            "peers": peers_a,
             "node_id": "node-alpha",
+            "signature": disc_sig,
         }
         await cli_ab.agent._send_frame(disc_a)
         # Also send normal task to trigger RoosStore push
@@ -86,15 +93,21 @@ async def main():
     ok_bc = await cli_bc.connect("127.0.0.1", ATP_C)
     test_fed("B → C handshake", ok_bc)
     if ok_bc:
+        peers_b = [
+            {"peer_id": "node-beta", "host": "127.0.0.1", "port": ATP_B,
+             "ed25519_pk": srv_b.identity.ed25519_pk, "capabilities": []},
+            {"peer_id": "node-alpha", "host": "127.0.0.1", "port": ATP_A,
+             "ed25519_pk": srv_a.identity.ed25519_pk, "capabilities": []},
+        ]
+        disc_b_payload = _cbor2.dumps(
+            {"node_id": "node-beta", "peers": peers_b}, canonical=True
+        )
+        disc_b_sig = ed25519_sign(cli_bc.agent.identity.ed25519_sk, disc_b_payload)
         disc_b = {
             "header": build_header(0x60),
-            "peers": [
-                {"peer_id": "node-beta", "host": "127.0.0.1", "port": ATP_B,
-                 "ed25519_pk": srv_b.identity.ed25519_pk, "capabilities": []},
-                {"peer_id": "node-alpha", "host": "127.0.0.1", "port": ATP_A,
-                 "ed25519_pk": srv_a.identity.ed25519_pk, "capabilities": []},
-            ],
+            "peers": peers_b,
             "node_id": "node-beta",
+            "signature": disc_b_sig,
         }
         await cli_bc.agent._send_frame(disc_b)
         await cli_bc.send_task("echo", "hello", deadline_ms=3000)
@@ -119,16 +132,26 @@ async def main():
     # ── Task forwarding ───────────────────────────────────────
     print("\n4. Task forwarding...")
     if ok_ab:
+        inner_task_frame = {
+            "header": build_header(0x01),
+            "task_type": "echo",
+            "task_payload": b"federated-task",
+            "deadline_ms": 5000,
+        }
+        fwd_task_payload = _cbor2.dumps({
+            "target_peer_id": "node-beta",
+            "ttl": 5,
+            "task_frame": inner_task_frame,
+            "forwarder_id": cli_ab.agent.identity.agent_name,
+        }, canonical=True)
+        fwd_sig = ed25519_sign(cli_ab.agent.identity.ed25519_sk, fwd_task_payload)
         fwd = {
             "header": build_header(0x62),
             "target_peer_id": "node-beta",
             "ttl": 5,
-            "task_frame": {
-                "header": build_header(0x01),
-                "task_type": "echo",
-                "task_payload": b"federated-task",
-                "deadline_ms": 5000,
-            },
+            "task_frame": inner_task_frame,
+            "signature": fwd_sig,
+            "forwarder_id": cli_ab.agent.identity.agent_name,
         }
         try:
             await cli_ab.agent._send_frame(fwd)
