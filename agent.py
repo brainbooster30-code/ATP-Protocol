@@ -364,6 +364,7 @@ class ATPAgent:
         self._current_task: Optional[asyncio.Task] = None
         self._e2e_key: Optional[bytes] = None
         self._peer_ed25519_pk: Optional[bytes] = None
+        self._root_store_pushed: bool = False
 
 
         # Register agent identity in monitor
@@ -413,8 +414,6 @@ class ATPAgent:
 
             self.bound = True
             self._setup_e2e()
-            # Broadcast local RootStore to peer (multi-authority bootstrap)
-            await self._push_root_store()
             if self.monitor:
                 self.monitor.add_event(HANDSHAKE_COMPLETE, {
                     "conn_id": self._conn_id,
@@ -631,6 +630,8 @@ class ATPAgent:
         """Server loop: read incoming frames and dispatch tasks."""
         if not self.is_server:
             return
+        # Push RootStore ora che il reader loop e' attivo
+        await self._maybe_push_root_store()
         while self.bound and self._reader:
             try:
                 frame = await self._read_frame()
@@ -645,7 +646,8 @@ class ATPAgent:
 
     async def _frame_reader_loop(self):
         """Background reader: reads and dispatches frames (client + server)."""
-        logger.debug("FRAME READER STARTED for %s", self._conn_id)
+        # Push RootStore prima di leggere (reader loop attivo)
+        await self._maybe_push_root_store()
         while self.bound and self._reader:
             try:
                 frame = await asyncio.wait_for(
@@ -938,17 +940,13 @@ class ATPAgent:
             elif leaf.key == "agent_sign_pk":
                 self._peer_ed25519_pk = leaf.value
 
-    async def _push_root_store(self):
-        """Send local RootStore to peer. Skipped in QUIC mode
-        (handshake timing issue with concurrent bidirectional push)."""
-        try:
-            from atp_quic import _QUIC_MODE
-            if _QUIC_MODE:
-                return
-        except ImportError:
-            pass
-        if not self._writer:
+    async def _maybe_push_root_store(self):
+        """Push RootStore to peer once after handshake.
+        Chiamato dal reader loop, non da perform_handshake, per evitare
+        deadlock su QUIC (entrambi i lati scrivono prima di leggere)."""
+        if self._root_store_pushed or not self._writer:
             return
+        self._root_store_pushed = True
         try:
             await asyncio.wait_for(self._do_push_root_store(), timeout=3.0)
         except asyncio.TimeoutError:
@@ -973,8 +971,27 @@ class ATPAgent:
                 for aid, info in manifest["authorities"].items()
             ],
         }
+        # Ensure the signing authority's own pk is in the manifest
+        own = self.identity.ed25519_pk
+        if not any(a["authority_id"] == manifest_data["authority_id"]
+                   for a in manifest_data["authorities"]):
+            manifest_data["authorities"].append({
+                "authority_id": manifest_data["authority_id"],
+                "pk": own,
+            })
+        # Debug: verify keypair consistency
+        from atp_core import ed25519_verify as _ed25519_verify
+        _dbg_payload = _cbor2.dumps(manifest_data, canonical=True)
+        _dbg_sig = ed25519_sign(self.identity.ed25519_sk, _dbg_payload)
+        if not _ed25519_verify(own, _dbg_sig, _dbg_payload):
+            logger.error("BUG: agent %s own ed25519 keypair is inconsistent!",
+                         self.identity.agent_name)
         payload = _cbor2.dumps(manifest_data, canonical=True)
         sig = ed25519_sign(self.identity.ed25519_sk, payload)
+        logger.debug("ROOTSTORE_PUSH: %s payload=%dB sig=%dB key=%s... "
+                     "payload_hex=%s",
+                     self.identity.agent_name, len(payload), len(sig), own.hex()[:16],
+                     payload.hex()[:64])
         manifest_data["signature"] = sig
         signed = _cbor2.dumps(manifest_data, canonical=True)
         frame = {

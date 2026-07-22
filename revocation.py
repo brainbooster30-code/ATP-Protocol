@@ -224,6 +224,9 @@ class RootStore:
                     "added": entry["added"],
                     "expires": entry["expires"],
                 }
+            for chain_entry in data["chain"]:
+                if isinstance(chain_entry.get("manifest"), bytes):
+                    chain_entry["manifest_hex"] = chain_entry.pop("manifest").hex()
             with open(self._persist_path, "w") as f:
                 json.dump(data, f, indent=2)
         except Exception as exc:
@@ -282,18 +285,27 @@ class RootStore:
                 return False
             # Re-serialize without signature for verification
             payload = _cbor2.dumps(manifest, canonical=True)
-            # Find the signing authority
+            # Find the signing authority — first try RootStore, then bootstrap
             signer_id = manifest.get("authority_id", "")
+            signer_pk = None
             with self._lock:
-                signer_pk_entry = self._manifest["authorities"].get(signer_id)
-                if signer_pk_entry is None:
-                    logger.warning("Chain: signing authority %s not in RootStore", signer_id)
-                    return False
-                signer_pk = signer_pk_entry["pk"]
+                entry = self._manifest["authorities"].get(signer_id)
+                if entry:
+                    signer_pk = entry["pk"]
+            if signer_pk is None:
+                # Bootstrap: look for the authority's own pk in the manifest
+                for entry in manifest.get("authorities", []):
+                    if entry.get("authority_id") == signer_id:
+                        signer_pk = entry["pk"]
+                        break
+            if signer_pk is None:
+                logger.warning("Chain: signing authority %s not found", signer_id)
+                return False
             # Verify signature
             from atp_core import ed25519_verify
             if not ed25519_verify(signer_pk, sig, payload):
-                logger.warning("Chain: bad signature on manifest from %s", signer_id)
+                logger.warning("Chain: bad signature on manifest from %s",
+                               signer_id)
                 return False
             # Add new authorities from manifest
             for entry in manifest.get("authorities", []):

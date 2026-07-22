@@ -14,6 +14,7 @@ import ipaddress
 import logging
 import os
 import tempfile
+import time
 import ssl as ssl_module
 from typing import Optional
 
@@ -41,9 +42,6 @@ logger = logging.getLogger(__name__)
 _quic_ca_path: Optional[str] = None
 _quic_ca_key: Optional[rsa.RSAPrivateKey] = None
 _quic_ca_cert_pem: Optional[bytes] = None
-
-
-_QUIC_MODE = False  # Set True in QUIC transport to disable RootStore push
 
 
 def _ensure_quic_ca() -> tuple[str, bytes, rsa.RSAPrivateKey]:
@@ -138,7 +136,6 @@ class QUICServer:
         self._running = False
         if self._server:
             self._server.close()
-            await self._server.wait_closed()
 
     def _on_quic_stream(self, reader: asyncio.StreamReader,
                         writer: asyncio.StreamWriter):
@@ -196,29 +193,47 @@ class QUICClient:
         self.agent: Optional[ATPAgent] = None
         self._connected = False
         self._protocol = None
+        self._cm = None
         self.identity = AgentIdentity(agent_name="atp-quic-client")
 
     async def connect(self, host: str = SERVER_HOST, port: int = SERVER_PORT) -> bool:
         config = _make_quic_config(server_side=False, cn=f"quic-client-{host}-{port}")
-        async def _connect_inner():
-            cm = connect(
+        t0 = time.time()
+        try:
+            self._cm = connect(
                 host=host, port=port, configuration=config,
                 stream_handler=self._on_stream, wait_connected=True,
             )
-            self._protocol = await cm.__aenter__()
-            reader, writer = await self._protocol.create_stream()
-            self.agent = ATPAgent(identity=self.identity, is_server=False, monitor=self.monitor)
-            ok = await self.agent.perform_handshake(reader, writer)
-            return ok
-
-        try:
-            ok = await asyncio.wait_for(_connect_inner(), timeout=15.0)
+            self._protocol = await asyncio.wait_for(
+                self._cm.__aenter__(), timeout=8.0
+            )
+            log_prefix = f"QUIC[{host}:{port}]"
+            logger.info("%s connected in %.1fs", log_prefix, time.time() - t0)
+            reader, writer = await asyncio.wait_for(
+                self._protocol.create_stream(), timeout=5.0
+            )
+            logger.info("%s stream created", log_prefix)
         except asyncio.TimeoutError:
-            logger.error("QUIC connect: overall timeout")
+            logger.error("QUIC connect: timeout establishing QUIC connection")
             return False
         except Exception as exc:
             logger.error("QUIC connect failed: %s", exc)
             return False
+
+        self.agent = ATPAgent(identity=self.identity, is_server=False, monitor=self.monitor)
+        try:
+            t1 = time.time()
+            ok = await asyncio.wait_for(
+                self.agent.perform_handshake(reader, writer), timeout=10.0
+            )
+            logger.info("%s ATP handshake done in %.1fs (ok=%s)", log_prefix, time.time() - t1, ok)
+        except asyncio.TimeoutError:
+            logger.error("QUIC connect: ATP handshake timeout")
+            return False
+        except Exception as exc:
+            logger.error("QUIC connect: ATP handshake failed: %s", exc)
+            return False
+
         self._connected = ok
         if ok:
             logger.info("QUIC Client bound to %s:%s", host, port)
@@ -239,9 +254,10 @@ class QUICClient:
     async def disconnect(self):
         if self.agent: await self.agent.close_async()
         self._connected = False
-        if self._protocol:
+        if self._protocol and self._cm:
             try:
-                self._protocol.close()
-                await self._protocol.wait_closed()
-            except Exception: pass
+                await self._cm.__aexit__(None, None, None)
+            except Exception:
+                pass
             self._protocol = None
+            self._cm = None
