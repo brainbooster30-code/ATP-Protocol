@@ -9,6 +9,7 @@ import os
 import uuid
 import struct
 import time
+import asyncio
 import logging
 from typing import Optional
 from dataclasses import dataclass, field
@@ -419,7 +420,6 @@ async def decode_frame(reader) -> Optional[dict]:
     Read a length-prefixed CBOR frame from an asyncio StreamReader.
     Returns None on connection close or decoding error.
     """
-    import asyncio
     try:
         raw_len = await asyncio.wait_for(reader.readexactly(4), timeout=30)
     except (asyncio.TimeoutError, asyncio.IncompleteReadError):
@@ -444,3 +444,84 @@ async def send_frame(writer, payload: dict) -> None:
     data = encode_frame(payload)
     writer.write(data)
     await writer.drain()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Buffered frame reader  —  higher throughput for bulk transfers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BufferedFrameReader:
+    """Buffered frame reader that reads in large chunks to reduce syscalls.
+
+    Keeps an internal bytearray buffer.  Each read pulls up to *chunk_size*
+    bytes from the transport, then frames are parsed from the buffer.
+    This reduces the number of OS read calls per frame from 2 to ~1.
+
+    Thread-safe only if the underlying StreamReader is; intended for
+    single-consumer asyncio usage.
+
+    Usage::
+
+        reader = BufferedFrameReader(stream_reader)
+        while True:
+            frame = await reader.read_frame()
+            if frame is None:
+                break
+            # process frame
+    """
+
+    def __init__(self, reader: asyncio.StreamReader, chunk_size: int = 65536):
+        self._reader = reader
+        self._chunk_size = chunk_size
+        self._buf = bytearray()
+        self._closed = False
+
+    async def read_frame(self) -> Optional[dict]:
+        """Read one length-prefixed CBOR frame from the internal buffer.
+
+        Returns None on EOF, connection close, or decoding error.
+        Raises asyncio.TimeoutError only on the *first* read (header);
+        after that the data may already be buffered.
+        """
+        if self._closed:
+            return None
+        # Ensure at least 4 bytes (length prefix) are available
+        if len(self._buf) < 4:
+            try:
+                chunk = await asyncio.wait_for(
+                    self._reader.read(self._chunk_size), timeout=30
+                )
+            except (asyncio.TimeoutError, asyncio.IncompleteReadError):
+                self._closed = True
+                return None
+            if not chunk:
+                self._closed = True
+                return None
+            self._buf.extend(chunk)
+        # Read length
+        length = struct.unpack("!I", bytes(self._buf[:4]))[0]
+        if length == 0 or length > 2 * 1024 * 1024:
+            logger.warning("BufferedFrameReader: invalid length %d", length)
+            self._buf = self._buf[4:]
+            return None
+        # Ensure full payload is available
+        needed = 4 + length
+        while len(self._buf) < needed:
+            try:
+                chunk = await asyncio.wait_for(
+                    self._reader.read(self._chunk_size), timeout=30
+                )
+            except asyncio.TimeoutError:
+                self._closed = True
+                return None
+            if not chunk:
+                self._closed = True
+                return None
+            self._buf.extend(chunk)
+        body = bytes(self._buf[4:needed])
+        self._buf = self._buf[needed:]
+        try:
+            return cbor2.loads(body)
+        except Exception as exc:
+            logger.warning("BufferedFrameReader: CBOR error — %s", exc)
+            return None
