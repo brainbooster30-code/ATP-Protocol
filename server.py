@@ -47,15 +47,18 @@ class ATPServer:
         self._shutdown = shutdown or GracefulShutdown()
         self._health = health
 
-    async def start(self, host: str = SERVER_HOST, port: int = SERVER_PORT):
-        """Start the TCP/TLS server, gossip, health checks — ready for production."""
+    async def start(self, host: str = SERVER_HOST, port: int = SERVER_PORT,
+                    block: bool = True):
+        """Start the TCP/TLS server, gossip, health checks — ready for production.
+        If block=False, returns immediately after startup (for tests)."""
         self._loop = asyncio.get_running_loop()
 
         # Structured logging
         setup_logging()
 
         # Signal handlers for graceful shutdown
-        self._shutdown.register(self._loop)
+        if block:
+            self._shutdown.register(self._loop)
 
         # Build SSL context
         ssl_ctx = make_ssl_context(server_side=True, cn=f"atp-server-{host}:{port}")
@@ -73,24 +76,30 @@ class ATPServer:
         if self._health is None:
             self._health = HealthCheckServer(conn_limiter=self._conn_limiter)
         health_task = asyncio.create_task(self._health.start())
-        self._shutdown.track(health_task)
+        if block:
+            self._shutdown.track(health_task)
 
         # Gossip protocol
         from revocation import get_gossip, GossipServer
         gossip = get_gossip(node_id=f"server-{host}:{port}")
         self._gossip_task = asyncio.create_task(gossip.gossip_loop(interval_s=5))
-        self._shutdown.track(self._gossip_task)
+        if block:
+            self._shutdown.track(self._gossip_task)
 
         from config import GOSSIP_PORT
         self._gossip_server = GossipServer(monitor=self.monitor)
         self._gossip_server_task = asyncio.create_task(
             self._gossip_server.start(host=host, port=GOSSIP_PORT)
         )
-        self._shutdown.track(self._gossip_server_task)
+        if block:
+            self._shutdown.track(self._gossip_server_task)
 
         # Mark ready for Kubernetes readiness probe
         self._health.ready = True
         logger.info("ATP Server ready — health check on :%s", self._health._port)
+
+        if not block:
+            return  # test/embed mode: return after startup
 
         try:
             async with self._server:

@@ -63,7 +63,7 @@ async def main():
 
     # Start server
     server = ATPServer()
-    srv_task = asyncio.create_task(server.start("127.0.0.1", port))
+    srv_task = asyncio.create_task(server.start("127.0.0.1", port, block=False))
     await asyncio.sleep(0.5)
     t_start = time.time()
 
