@@ -6,10 +6,12 @@ in reti federate sicure in poche righe di codice.
 ## Installazione
 
 ```bash
-cd ATP/sdk
+```
 pip install -e .              # core + tunnel UPnP nativo: aiohttp, blake3, cbor2, cryptography
 pip install -e ".[all]"       # tutto incluso dashboard
 pip install aioquic           # QUIC transport (opzionale, v1.8+)
+
+# Federation è nativa — nessuna dipendenza extra
 ```
 
 **Il tunnel internet non richiede dipendenze esterne** — UPnP nativo

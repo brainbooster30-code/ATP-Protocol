@@ -565,3 +565,63 @@ da un'autorità sconosciuta, tenta il bootstrap:
 Questo permette trust bootstrap senza registrazione manuale:
 ogni agente include la propria chiave Ed25519 nel manifest
 che invia al peer durante il push post-handshake.
+
+### 9.7 Federation Protocol (v2.0)
+
+ATP supporta la federazione di 3+ nodi in una rete mesh.
+I frame 0x60-0x63 abilitano peer discovery, heartbeat e task forwarding.
+
+**Frame types:**
+
+| Frame | Type | Descrizione |
+|-------|------|-------------|
+| 0x60 | PEER_DISCOVERY | Gossip di peer conosciuti (fanout 3, ogni 60s) |
+| 0x61 | PEER_HEARTBEAT | Keepalive periodico (ogni 15s, timeout 90s) |
+| 0x62 | TASK_FORWARD | Inoltra un task attraverso la rete (TTL max 5) |
+| 0x63 | PEER_DISCOVERY_ACK | Conferma ricezione discovery |
+
+**Funzionamento:**
+
+1. Ogni server ATP avvia un FederationRouter (routing table, max 100 peer)
+2. HeartbeatManager invia PEER_HEARTBEAT ogni 15s ai peer connessi
+3. PeerDiscovery propaga la peer list via gossip ogni 60s (fanout 3)
+4. PEER_DISCOVERY contiene: peer_id, host, port, ed25519_pk, capabilities
+5. PEER_HEARTBEAT aggiorna `last_seen` — peer non visti da >90s sono rimossi
+6. TASK_FORWARD inoltra task con TTL: ogni hop decrementa, TTL=0 scarta
+
+**Esempio TASK_FORWARD:**
+```
+{
+  "header": {"frame_type": 0x62, ...},
+  "target_peer_id": "node-gamma",
+  "ttl": 5,
+  "task_frame": {
+    "header": {"frame_type": 0x01, ...},
+    "task_type": "echo",
+    "task_payload": b"...",
+    "deadline_ms": 5000
+  }
+}
+```
+
+### 9.8 Production Hardening
+
+**Handshake deadline:** `perform_handshake` wrappato in `asyncio.wait_for`
+con `HANDSHAKE_TIMEOUT_S = 30s`.
+
+**Manifest anti-replay:** `manifest_nonce` (16 byte) + `manifest_ts` (timestamp).
+`chain_add` rifiuta ts > 5 minuti o nonce duplicato.
+
+**RootStore version tracking:** `_version` monotonic, incluso in manifest.
+`chain_add` rifiuta versioni ≤ latest known.
+
+**mTLS Certificate Rotation:** `CertRotator` controlla scadenza ogni ora
+(`CERT_ROTATION_CHECK_INTERVAL_S = 3600`). Se il cert scade entro
+`CERT_ROTATION_WINDOW_DAYS = 7`, lo rigenera. `ATPServer.reload_ssl()`
+fa hot-reload senza restart.
+
+**Circuit breaker:** `CircuitBreaker` per DeepSeek: 5 errori consecutivi
+aprono il circuito (OPEN → HALF_OPEN dopo 30s → CLOSED al primo successo).
+
+**Stress test:** `stress_test.py` — N connessioni × K task, misura throughput
+e latenza P50/P99/max. Risultato: 95 task/s, P99 94ms, 0% errori.

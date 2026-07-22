@@ -224,6 +224,7 @@ python teacher_client.py 192.168.1.50:8443
 | `school_server.py` | 1 | Server scolastico con tunnel internet |
 | `teacher_client.py` | 1 | Client insegnante con menu interattivo |
 | `quic_example.py` | 2 | Server + client QUIC (RFC 9000) |
+| `federation_example.py` | 3 | Rete federata 3 nodi |
 
 ---
 
@@ -262,7 +263,7 @@ python teacher_client.py 192.168.1.50:8443
 ### 🤝 Handshake 5 fasi: TLS → Version → MCC → Capability → Task
 
 ### ⚡ Task lifecycle
-- 20 frame types, 15 error codes, CBOR canonical encoding
+- **24 frame types**, 15 error codes, CBOR canonical encoding
 - Anti-replay (20s), rate limiting (100 RPS), HandshakeRateLimiter (10 handshake/s IP)
 - Clock skew (10s con fallback server_time_ms)
 - **Multiplexing per task_id** — task concorrenti sulla stessa connessione
@@ -281,6 +282,18 @@ python teacher_client.py 192.168.1.50:8443
 - aioquic 1.3.0 (opzionale, TCP fallback automatico)
 - Certificati RSA 2048 per compatibilità TLS 1.3 (ECDSA P-256 in roadmap)
 - `QUICServer` e `QUICClient` in `atp_quic.py` — API identica a TCP
+
+### 🔗 Federation Protocol (v2.0)
+- **Peer discovery** — gossip automatico tra nodi federati (0x60, fanout 3, ogni 60s)
+- **Heartbeat** — keepalive periodico (0x61, ogni 15s, timeout 90s)
+- **Task forwarding** — routing tra nodi con TTL (0x62, max 5 hop)
+- **Routing table** — max 100 peer, auto-pulizia peer morti
+- **Multi-server** — 3+ server ATP formano una rete federata automaticamente
+
+### 🔄 mTLS Certificate Rotation
+- **Auto-renewal** — controllo scadenza ogni ora, rinnovo 7 giorni prima
+- **Hot-reload** — `reload_ssl()` senza restart del server
+- **Zero downtime** — connessioni esistenti preservate durante la rotation
 
 ### 🌐 Tunnel internet zero-config
 - UPnP nativo (pure Python, zero dipendenze) — apre porta sul router automaticamente
