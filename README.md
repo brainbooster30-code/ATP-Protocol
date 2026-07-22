@@ -245,23 +245,28 @@ python teacher_client.py 192.168.1.50:8443
 ### 🔐 Crittografia
 - **Ed25519** — firme digitali, certificati, proof-of-possession
 - **X25519** — key agreement (ECDH, riservato per crittografia end-to-end futura)
-- **BLAKE3** — hash veloce (fallback BLAKE2b-256)
+- **BLAKE3** — hash veloce (obbligatorio, nessun fallback)
 - **Key separation** — X25519 ≠ Ed25519 obbligatoria (anti dual-use)
+- **Mutual TLS con CA condivisa** — certificati firmati da CA interna, CERT_REQUIRED su entrambi i lati
 
 ### 🆔 Merkle-Claim Card
 - Documento di identità verificabile come albero di Merkle
 - Foglie con salt individuali (resistenza pre-immagine)
 - 8 step di verifica: versione, scadenza, signature, revoca
 - `leaf_hash` mai trasmesso — il ricevente lo ricalcola
+- **Verifica sempre obbligatoria** (nessuna modalità demo bypassabile)
 
 ### 🤝 Handshake 5 fasi: TLS → Version → MCC → Capability → Task
 
 ### ⚡ Task lifecycle
-- 14 frame types, 14 error codes, CBOR canonical encoding
-- Anti-replay (20s), rate limiting (100 RPS), clock skew (10s)
+- 20 frame types, 15 error codes, CBOR canonical encoding
+- Anti-replay (20s), rate limiting (100 RPS), clock skew (10s con fallback)
+- **Multiplexing per task_id** — task concorrenti sulla stessa connessione
 
 ### 🔄 Revoca distribuita
-- Cuckoo Filter (FPR ~2.3e-31), RootStore, Degradation Policy, Gossip
+- Cuckoo Filter (FPR ~2.3e-31), RootStore (persistente su JSON), Degradation Policy (3 stati)
+- **Gossip TCP reale** — seriali revocati trasmessi a peer su porta 8444
+- **CONTROL_REVOKE_NOTIFY** — frame ATP per revoca su connessione esistente
 
 ### 🌐 Tunnel internet zero-config
 - UPnP nativo (pure Python, zero dipendenze) — apre porta sul router automaticamente

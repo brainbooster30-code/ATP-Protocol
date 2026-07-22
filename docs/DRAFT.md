@@ -61,7 +61,9 @@ standard per tre ragioni:
 - **Sicurezza**: Ed25519 è resistente a side-channel, non richiede random
   durante la firma
 - **Key separation obbligatoria**: X25519 per ECDH, Ed25519 per firme —
-  eliminiamo il rischio di dual-use
+  eliminiamo il rischio di dual-use. Step 7 della verifica MCC (agent_pk == TLS key)
+  è disabilitato perché chiavi di tipo diverso (X25519 vs Ed25519) non possono
+  coincidere — il binding è garantito dal proof-of-possession nell'handshake.
 
 ### 3.3 Perché BLAKE3 e non SHA-256?
 
@@ -120,14 +122,13 @@ ATP v1.7 è un'implementazione funzionante con:
 
 ## 6. Lavori futuri
 
-- [x] Rate limiting implementato (sliding window, 100 RPS)
-- [x] Anti-replay implementato (bloom filter, 20s window)
-- [x] Clock skew verificato in ricezione frame
-- [x] Keepalive PING/PONG (30s)
-- [x] Shutdown ACK graceful
-- [x] Task cancel (TASK_CANCEL 0x05)
-- [x] verify_tls option per produzione
-- [ ] Multiplexing task stream (stream ID multipli)
+- **[x] Multiplexing task**: task concorrenti per task_id con asyncio.Future
+- **[x] Gossip attivo**: seriali revocati su TCP (porta 8444) + CONTROL_REVOKE_NOTIFY
+- **[x] RootStore persistente**: autorità salvate su root_store.json
+- **[x] Mutual TLS**: CA condivisa, CERT_REQUIRED su entrambi i lati
+- **[x] Verifica MCC sempre obbligatoria**: rimossa demo_mode
+- **[x] BLAKE3 obbligatorio**: nessun fallback a BLAKE2b
+- **[ ] Multiplexing task stream (stream ID multipli)**
 - [ ] Crittografia end-to-end con X25519 ECDH
 - [ ] Namespace distribuiti per agenti
 - [ ] Federazione tra istanze ATP diverse

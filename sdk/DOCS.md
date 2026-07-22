@@ -66,7 +66,7 @@ await client.connect(host: str = "127.0.0.1",
 ```
 
 Connette al server ATP ed esegue l'handshake completo:
-1. Connessione TLS (certificati auto-firmati accettati in demo)
+1. Connessione TLS mutuo (certificati firmati da CA condivisa, verifica obbligatoria)
 2. Creazione identità + MCC con chiavi Ed25519/X25519
 3. Negoziazione versione
 4. Scambio MCC e identity binding con proof-of-possession
@@ -455,17 +455,18 @@ La chiave viene risolta automaticamente:
 2. Registry Windows `HKCU\Environment` (per git-bash/MSYS2)
 3. Se assente: risposta mock `[ATP v1.7 Mock Response]`
 
-### Demo mode
+### Verifica identità
 
-L'SDK usa `demo_mode=True` di default — salta la verifica della firma dell'autorità
-nell'handshake (necessario quando server e client sono su macchine diverse con
-Authority separate). Disattivare per produzione.
+L'SDK verifica sempre l'MCC del peer in 8 step: versione, scadenza, foglie critiche,
+root hash, firma dell'autorità, chiave separata, revoca. Nessuna modalità demo bypassabile.
 
 ### Modalità produzione
 
-1. Sostituire i certificati TLS auto-firmati con certificati reali (Let's Encrypt)
-2. Impostare `client.demo_mode = False`
-3. Registrare le chiavi pubbliche delle autorità nel RootStore
+1. Sostituire i certificati TLS con certificati reali firmati da una CA riconosciuta
+   (es. Let's Encrypt) se si vuole uscire dal modello CA condivisa
+2. Configurare il RootStore con le chiavi pubbliche delle autorità di fiducia
+3. Aggiungere peer gossip per la propagazione delle revoche (configurazione automatica
+   se i server ATP condividono la stessa rete)
 
 ---
 
@@ -473,7 +474,7 @@ Authority separate). Disattivare per produzione.
 
 - Python ≥ 3.10
 - `aiohttp` ≥ 3.8 — HTTP client per DeepSeek
-- `blake3` ≥ 0.3 — hash crittografico (fallback BLAKE2b)
+- `blake3` ≥ 0.3 — hash crittografico (obbligatorio, nessun fallback)
 - `cbor2` ≥ 5.4 — codifica frame
 - `cryptography` ≥ 41.0 — TLS, chiavi, firme Ed25519/X25519
 - Tunnel internet: **UPnP nativo** (zero dipendenze, standard library pure Python)

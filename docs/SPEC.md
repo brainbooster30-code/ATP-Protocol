@@ -2,7 +2,7 @@
 
 **Agent Transport Protocol — Technical Specification**
 
-*Versione: 1.7*
+*Versione: 1.7.1*
 *Stato: Stabile*
 *Linguaggio di implementazione: Python 3.12+*
 
@@ -317,8 +317,11 @@ PONG ricevuto → aggiorna `_last_peer_activity`.
 
 ### 5.1 Fase 1: TLS
 
-Connessione TCP con TLS 1.3. I certificati auto-firmati Ed25519 sono
-generati all'avvio (modo demo). In produzione, certificati firmati da CA.
+Connessione TCP con TLS 1.3. **Mutual TLS obbligatorio**: `CERT_REQUIRED`
+su entrambi i lati. I certificati sono firmati da una CA condivisa generata
+all'avvio (Ed25519). Il client presenta il proprio certificato, il server
+lo verifica contro la stessa CA. In produzione, sostituire con certificati
+firmati da una CA riconosciuta.
 
 ### 5.2 Fase 2: Version Negotiation
 
@@ -406,8 +409,10 @@ coppia di chiavi per scopi diversi).
 
 - Fanout: 3 peer
 - Intervallo: 5 secondi
-- Scambio di serial_number revocati
-- Tracciamento dei seriali già noti per evitare loop
+- Trasporto: TCP semplice, payload CBOR (lista di hex serial)
+- Ricevente: GossipServer su porta 8444, inserisce seriali nel CuckooFilter
+- Frame ATP: CONTROL_REVOKE_NOTIFY (0x11) per revoca su connessione esistente
+- Gestito da `_dispatch_frame` in entrambi lati (server e client)
 
 ---
 
