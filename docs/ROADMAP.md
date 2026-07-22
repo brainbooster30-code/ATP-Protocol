@@ -75,18 +75,24 @@ TASK_RESPONSE ora supporta `partial=true` e `sequence`:
 
 ---
 
-### 🥈 Lotto 4 — Raw Public Key (RFC 7250) (Prerequisito pronto ✅)
+### 🥈 Lotto 4 — Raw Public Key (RFC 7250) — Prerequisito pronto
 
-`aioquic` installato e funzionante (v1.3.0). Supporta nativamente:
+`aioquic` installato (v1.3.0). Supporta nativamente:
 - QUIC TLS 1.3
 - Raw Public Keys (RFC 7250)
 - CipherSuite: AES-128-GCM, AES-256-GCM, CHACHA20-POLY1305
 
+**⚠️ Nota**: aioquic 1.3.0 ha un problema di compatibilità TLS con
+cryptography 49+. Il modulo `atp_quic.py` è completo e compila, ma il
+TLS handshake fallisce con "No supported signature algorithm" su
+certificati ECDSA P-256. Serve aioquic >= 1.4.0, cryptography < 49,
+o un fix upstream.
+
 **Task:**
-- [ ] Implementare `QUICTransport` con aioquic
-- [ ] Generare chiavi raw invece di X.509 per TLS
-- [ ] Mantenere TCP come fallback
-- [ ] Benchmark comparativo TCP vs QUIC
+- [x] Modulo `atp_quic.py` completo: QUICServer + QUICClient
+- [x] Certificati ECDSA P-256 con SAN per aioquic
+- [x] CA condivisa per mutual TLS
+- [ ] QUIC funzionante su localhost (bloccato da aioquic/cryptography compat)
 
 ---
 

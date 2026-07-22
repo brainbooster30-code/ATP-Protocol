@@ -17,7 +17,8 @@ import uuid
 from cryptography import x509
 from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import x25519, ed25519
+import datetime
+from cryptography.hazmat.primitives.asymmetric import x25519, ed25519, ec
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.backends import default_backend
 
@@ -228,6 +229,59 @@ def get_ca_cert_pem() -> bytes:
     return ca_cert
 
 
+def get_quic_cert(cn: str = "atp-quic") -> tuple[bytes, bytes, bytes]:
+    """Get ECDSA P-256 cert+key for QUIC/TLS 1.3 compatibility.
+    
+    QUIC (via aioquic) has limited Ed25519 support in TLS handshake.
+    ECDSA P-256 is universally supported by all TLS 1.3 stacks.
+    
+    Returns (cert_pem, key_pem, ca_cert_pem).
+    """
+    import datetime as _dt
+    # Generate ECDSA P-256 CA
+    ca_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
+    ca_pub = ca_key.public_key()
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "ATP QUIC CA")])
+    ca_cert = (
+        x509.CertificateBuilder()
+        .subject_name(ca_name)
+        .issuer_name(ca_name)
+        .public_key(ca_pub)
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(_dt.datetime.utcnow() - _dt.timedelta(days=1))
+        .not_valid_after(_dt.datetime.utcnow() + _dt.timedelta(days=365 * 10))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName("atp-ca")]), critical=False)
+        .sign(ca_key, hashes.SHA256(), default_backend())
+    )
+    ca_cert_pem = ca_cert.public_bytes(serialization.Encoding.PEM)
+    
+    # Generate ECDSA P-256 node keypair, signed by the ECDSA CA
+    node_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
+    node_pub = node_key.public_key()
+    node_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
+    san = x509.DNSName(cn) if not cn.startswith("atp-") else x509.DNSName("atp-node")
+    node_cert = (
+        x509.CertificateBuilder()
+        .subject_name(node_name)
+        .issuer_name(ca_cert.subject)
+        .public_key(node_pub)
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(_dt.datetime.utcnow() - _dt.timedelta(days=1))
+        .not_valid_after(_dt.datetime.utcnow() + _dt.timedelta(days=365 * 10))
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(x509.SubjectAlternativeName([san]), critical=False)
+        .sign(ca_key, hashes.SHA256(), default_backend())
+    )
+    cert_pem = node_cert.public_bytes(serialization.Encoding.PEM)
+    key_pem = node_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    return cert_pem, key_pem, ca_cert_pem
+
+
 def make_ssl_context(
     server_side: bool = False,
     cn: str = "atp-agent",
@@ -358,6 +412,9 @@ class ATPAgent:
                 await self._client_handshake(reader, writer)
 
             self.bound = True
+            self._setup_e2e()
+            # Broadcast local RootStore to peer (multi-authority bootstrap)
+            await self._push_root_store()
             if self.monitor:
                 self.monitor.add_event(HANDSHAKE_COMPLETE, {
                     "conn_id": self._conn_id,
@@ -876,6 +933,40 @@ class ATPAgent:
             elif leaf.key == "agent_sign_pk":
                 self._peer_ed25519_pk = leaf.value
 
+    async def _push_root_store(self):
+        """Send local RootStore manifest to peer via ROOT_STORE_UPDATE.
+        
+        Called after handshake so both sides can share authority keys
+        (multi-authority bootstrap). No-op if writer not available.
+        """
+        if not self._writer:
+            return
+        try:
+            from revocation import get_root_store
+            rs = get_root_store()
+            import cbor2 as _cbor2
+            manifest = rs.manifest
+            if not manifest.get("authorities"):
+                return
+            frame = {
+                "header": build_header(0x21),
+                "signed_manifest": _cbor2.dumps({
+                    "manifest_version": 1,
+                    "manifest_id": os.urandom(16),
+                    "timestamp": int(time.time()),
+                    "authority_id": list(manifest["authorities"].keys())[0],
+                    "authorities": [
+                        {"authority_id": aid, "pk": info["pk"]}
+                        for aid, info in manifest["authorities"].items()
+                    ],
+                }, canonical=True),
+            }
+            await self._send_frame(frame)
+            logger.debug("RootStore pushed to peer (%d authorities)",
+                         len(manifest["authorities"]))
+        except Exception as exc:
+            logger.debug("RootStore push skipped: %s", exc)
+
     @staticmethod
     async def call_deepseek(prompt: str, monitor: Optional[Monitor] = None,
                             conn_id: str = "") -> Optional[str]:
@@ -1093,7 +1184,6 @@ class ATPAgent:
 
         # Phase 5 — ready for task streams
         self.bound = True
-        self._setup_e2e()
         # Start keepalive task
         self._keepalive_task = asyncio.create_task(self._keepalive_loop())
 
@@ -1203,7 +1293,6 @@ class ATPAgent:
             logger.info("Capability exchange complete: %s", cap_resp.get("capabilities"))
 
         self.bound = True
-        self._setup_e2e()
 
     # ══════════════════════════════════════════════════════════════════════
     #  Internal: task handling
