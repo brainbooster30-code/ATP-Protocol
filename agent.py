@@ -223,6 +223,26 @@ def get_self_signed_cert(cn: str = "atp-agent") -> tuple[bytes, bytes]:
     return _cert_pem, _key_pem
 
 
+def get_cert_expiry_days(cert_pem: bytes) -> int:
+    """Return days until certificate expiry. Negative if expired."""
+    cert = x509.load_pem_x509_certificate(cert_pem)
+    delta = cert.not_valid_after_utc - datetime.datetime.now(datetime.UTC)
+    return delta.days
+
+
+def rotate_cert(cn: str = "atp-agent") -> tuple[bytes, bytes, bool]:
+    """Regenerate cert if within rotation window. Returns (cert, key, rotated)."""
+    global _cert_pem, _key_pem, _cert_cn
+    from config import CERT_ROTATION_WINDOW_DAYS
+    if _cert_pem and get_cert_expiry_days(_cert_pem) > CERT_ROTATION_WINDOW_DAYS:
+        return _cert_pem, _key_pem, False
+    ca_cert, ca_key = _ensure_ca()
+    _cert_pem, _key_pem = _sign_cert(ca_cert, ca_key, cn)
+    _cert_cn = cn
+    logger.info("mTLS cert rotated for CN=%s (window=%dd)", cn, CERT_ROTATION_WINDOW_DAYS)
+    return _cert_pem, _key_pem, True
+
+
 def get_ca_cert_pem() -> bytes:
     """Return the CA cert PEM (for client trust store)."""
     ca_cert, _ = _ensure_ca()

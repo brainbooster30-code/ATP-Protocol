@@ -19,7 +19,7 @@ from config import (
     DRAIN_TIMEOUT_S, HEALTH_CHECK_PORT,
     CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_RESET_S,
     RETRY_MAX_ATTEMPTS, RETRY_BACKOFF_BASE_S, RETRY_BACKOFF_MAX_S,
-    LOG_FORMAT,
+    LOG_FORMAT, CERT_ROTATION_WINDOW_DAYS, CERT_ROTATION_CHECK_INTERVAL_S,
 )
 
 logger = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ class JSONFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         base = {
-            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S.%fZ"),
+            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S.000Z"),
             "level": record.levelname,
             "logger": record.name,
             "msg": record.getMessage(),
@@ -313,3 +313,49 @@ class HealthCheckServer:
                 await asyncio.wait_for(self._server.wait_closed(), timeout=3.0)
             except Exception:
                 pass
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  mTLS Certificate Rotation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class CertRotator:
+    """Periodically check cert expiry and rotate before deadline.
+    Uses agent.rotate_cert() to regenerate CA-signed certs.
+    Server can hot-reload via reload_ssl_context()."""
+
+    def __init__(self, cn: str = "atp-server",
+                 window_days: int = CERT_ROTATION_WINDOW_DAYS,
+                 check_interval_s: float = CERT_ROTATION_CHECK_INTERVAL_S):
+        self._cn = cn
+        self._window_days = window_days
+        self._check_interval = check_interval_s
+        self._running = False
+        self._server_ref = None  # ATPServer reference for hot-reload
+        self._last_rotation_ts: float = 0.0
+
+    @property
+    def days_until_expiry(self) -> int:
+        from agent import get_self_signed_cert, get_cert_expiry_days
+        cert, _ = get_self_signed_cert(self._cn)
+        return get_cert_expiry_days(cert)
+
+    async def loop(self):
+        """Check cert expiry every check_interval_s, rotate if needed."""
+        self._running = True
+        while self._running:
+            await asyncio.sleep(self._check_interval)
+            try:
+                from agent import rotate_cert
+                _, _, rotated = rotate_cert(self._cn)
+                if rotated:
+                    logger.warning("mTLS cert ROTATED — %dd until previous expiry",
+                                   self.days_until_expiry)
+                    self._last_rotation_ts = time.monotonic()
+                    if self._server_ref:
+                        await self._server_ref.reload_ssl()
+            except Exception as exc:
+                logger.error("Cert rotation error: %s", exc)
+
+    def stop(self):
+        self._running = False

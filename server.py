@@ -13,14 +13,14 @@ from typing import Optional
 
 from config import (
     SERVER_HOST, SERVER_PORT, CONNECTION_SETUP_TIMEOUT_MS, MAX_CONCURRENT_CONNS,
-    FED_PORT,
+    FED_PORT, CERT_ROTATION_WINDOW_DAYS, CERT_ROTATION_CHECK_INTERVAL_S,
 )
 from agent import ATPAgent, AgentIdentity, make_ssl_context
 from monitor import Monitor, ERROR_OCCURRED
 from atp_core import decode_frame, build_header, send_frame
 from production import (
     setup_logging, GracefulShutdown, HealthCheckServer, ConnectionLimiter,
-    deepseek_circuit,
+    deepseek_circuit, CertRotator,
 )
 from federation import (
     FederationRouter, HeartbeatManager, PeerDiscovery,
@@ -117,6 +117,15 @@ class ATPServer:
         logger.info("Federation protocol started (heartbeat=%ds, discovery=%ds, port=%d)",
                      FED_HEARTBEAT_INTERVAL_S, FED_DISCOVERY_INTERVAL_S, FED_PORT)
 
+        # mTLS cert rotation (v2.0)
+        self._cert_rotator = CertRotator(cn=f"atp-server-{host}:{port}")
+        self._cert_rotator._server_ref = self
+        cert_task = asyncio.create_task(self._cert_rotator.loop())
+        if block:
+            self._shutdown.track(cert_task)
+        logger.info("mTLS cert rotation active (window=%dd, check=%ds)",
+                     CERT_ROTATION_WINDOW_DAYS, CERT_ROTATION_CHECK_INTERVAL_S)
+
         if not block:
             return  # test/embed mode: return after startup
 
@@ -143,7 +152,26 @@ class ATPServer:
         if self._health:
             self._health.ready = False
             await self._health.stop()
+        if hasattr(self, "_cert_rotator"):
+            self._cert_rotator.stop()
         logger.info("ATP Server stopped")
+
+    async def reload_ssl(self):
+        """Hot-reload TLS context with a fresh cert (no restart needed)."""
+        from agent import get_self_signed_cert
+        host = self._server.sockets[0].getsockname()[0] if self._server else "127.0.0.1"
+        port = self._server.sockets[0].getsockname()[1] if self._server else 0
+        new_ctx = make_ssl_context(server_side=True, cn=f"atp-server-{host}:{port}")
+        # Create new server with updated SSL, close old sockets
+        new_server = await asyncio.start_server(
+            self._on_connect, host=host, port=port,
+            ssl=new_ctx, reuse_address=True,
+        )
+        old_server = self._server
+        self._server = new_server
+        if old_server:
+            old_server.close()
+        logger.info("mTLS context hot-reloaded (cert rotation complete)")
 
     async def _on_connect(self, reader: asyncio.StreamReader,
                           writer: asyncio.StreamWriter):
