@@ -1,0 +1,132 @@
+{
+  "__init__.py": {
+    "mtime": 1784473127.7841384,
+    "ast_hash": "865815decf84b6ef4cf342b0fc9c76a1",
+    "semantic_hash": "865815decf84b6ef4cf342b0fc9c76a1"
+  },
+  "agent.py": {
+    "mtime": 1784474083.3577428,
+    "ast_hash": "9e940a3771a135cd8269acf51658ee43",
+    "semantic_hash": "9e940a3771a135cd8269acf51658ee43"
+  },
+  "atp_core.py": {
+    "mtime": 1784474040.7331173,
+    "ast_hash": "7d4c1b715cd607cb9feacc86b39efcff",
+    "semantic_hash": "7d4c1b715cd607cb9feacc86b39efcff"
+  },
+  "authority.py": {
+    "mtime": 1784473127.8425965,
+    "ast_hash": "58bc59756c3c6eb0520512551ead0672",
+    "semantic_hash": "58bc59756c3c6eb0520512551ead0672"
+  },
+  "client.py": {
+    "mtime": 1784473127.8558736,
+    "ast_hash": "260157bc6e2c387d8e388c4798f14df4",
+    "semantic_hash": "260157bc6e2c387d8e388c4798f14df4"
+  },
+  "config.py": {
+    "mtime": 1784473997.1689112,
+    "ast_hash": "f4ae0623e8deb27b778829251ab816da",
+    "semantic_hash": "f4ae0623e8deb27b778829251ab816da"
+  },
+  "dashboard.py": {
+    "mtime": 1784473128.1370625,
+    "ast_hash": "c50c30897ca5cbf6af1256aeed5c358d",
+    "semantic_hash": "c50c30897ca5cbf6af1256aeed5c358d"
+  },
+  "main.py": {
+    "mtime": 1784473128.154125,
+    "ast_hash": "af49e469065524401e4c898fa5b03ff5",
+    "semantic_hash": "af49e469065524401e4c898fa5b03ff5"
+  },
+  "monitor.py": {
+    "mtime": 1784473997.1689112,
+    "ast_hash": "1de23a1a5d034482bd3362fe67c92b31",
+    "semantic_hash": "1de23a1a5d034482bd3362fe67c92b31"
+  },
+  "revocation.py": {
+    "mtime": 1784473127.9350247,
+    "ast_hash": "4e560bce6a265f30d9535c1c05866a5e",
+    "semantic_hash": "4e560bce6a265f30d9535c1c05866a5e"
+  },
+  "sdk/atp_sdk/__init__.py": {
+    "mtime": 1784473135.0701623,
+    "ast_hash": "ecd78625abb714a3e17e3f99fffde0fc",
+    "semantic_hash": "ecd78625abb714a3e17e3f99fffde0fc"
+  },
+  "sdk/atp_sdk/client.py": {
+    "mtime": 1784473616.376535,
+    "ast_hash": "3639ddc941e2e730c12951d1713c1051",
+    "semantic_hash": "3639ddc941e2e730c12951d1713c1051"
+  },
+  "sdk/atp_sdk/server.py": {
+    "mtime": 1784473624.8660078,
+    "ast_hash": "27e68c4b7ba955d15cdcc191295b97a2",
+    "semantic_hash": "27e68c4b7ba955d15cdcc191295b97a2"
+  },
+  "sdk/atp_sdk/tunnel.py": {
+    "mtime": 1784472148.2052755,
+    "ast_hash": "72dad383eb067feaed683b4b371ceb05",
+    "semantic_hash": "72dad383eb067feaed683b4b371ceb05"
+  },
+  "sdk/examples/agent_voting.py": {
+    "mtime": 1784473141.759511,
+    "ast_hash": "bd817832df33bb8da60d95429b62fddd",
+    "semantic_hash": "bd817832df33bb8da60d95429b62fddd"
+  },
+  "sdk/examples/azienda.py": {
+    "mtime": 1784473141.773522,
+    "ast_hash": "d8dd93a7ed27338a2ca2b03f6f8df725",
+    "semantic_hash": "d8dd93a7ed27338a2ca2b03f6f8df725"
+  },
+  "sdk/examples/code_review_pipeline.py": {
+    "mtime": 1784473141.7910657,
+    "ast_hash": "ac15d352d2b56da3b84d8d33701f1028",
+    "semantic_hash": "ac15d352d2b56da3b84d8d33701f1028"
+  },
+  "sdk/examples/install_school.sh": {
+    "mtime": 1784472148.2102728,
+    "ast_hash": "3906398ce3753d5e331fb7430d84d4ce",
+    "semantic_hash": "3906398ce3753d5e331fb7430d84d4ce"
+  },
+  "sdk/examples/install_teacher.sh": {
+    "mtime": 1784472148.2122717,
+    "ast_hash": "d29e76dd8f642af0867f55687cab7a61",
+    "semantic_hash": "d29e76dd8f642af0867f55687cab7a61"
+  },
+  "sdk/examples/research_assistant.py": {
+    "mtime": 1784473141.8105822,
+    "ast_hash": "a836ee26581e1bb59214bc73a536e20c",
+    "semantic_hash": "a836ee26581e1bb59214bc73a536e20c"
+  },
+  "sdk/examples/school_db.json": {
+    "mtime": 1784472148.2132723,
+    "ast_hash": "94f8378719774d86d256ac38b7f6492a",
+    "semantic_hash": "94f8378719774d86d256ac38b7f6492a"
+  },
+  "sdk/examples/school_server.py": {
+    "mtime": 1784473141.8275795,
+    "ast_hash": "2af01b63c97010cacb154177c315021b",
+    "semantic_hash": "2af01b63c97010cacb154177c315021b"
+  },
+  "sdk/examples/teacher_client.py": {
+    "mtime": 1784473141.841584,
+    "ast_hash": "39e1dab3d896c9a5d74c04c0443ecdb1",
+    "semantic_hash": "39e1dab3d896c9a5d74c04c0443ecdb1"
+  },
+  "sdk/examples/teacher_school.py": {
+    "mtime": 1784473141.8455925,
+    "ast_hash": "2c4de6964d80757e33dcb86cb6bbc3e5",
+    "semantic_hash": "2c4de6964d80757e33dcb86cb6bbc3e5"
+  },
+  "sdk/setup.py": {
+    "mtime": 1784473134.8486216,
+    "ast_hash": "fdc0b4f5b93a27862c5560832ce2837c",
+    "semantic_hash": "fdc0b4f5b93a27862c5560832ce2837c"
+  },
+  "server.py": {
+    "mtime": 1784473669.1101658,
+    "ast_hash": "eb21e746f51a2688563ec32506673ff1",
+    "semantic_hash": "eb21e746f51a2688563ec32506673ff1"
+  }
+}

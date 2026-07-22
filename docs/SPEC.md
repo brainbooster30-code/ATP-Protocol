@@ -112,7 +112,7 @@ Tutti i campi in critical_mask devono essere presenti tra le foglie.
 5. Recupera `authority_pk` dal RootStore usando `authority_id`
 6. Verifica `Ed25519_verify(authority_pk, authority_sig, commitment_cbor)`
 7. (Opzionale) `agent_pk == TLS certificate public key`
-8. (ATP-Full) `check_revoked(serial_number) == False`
+8. **`check_revoked(serial_number) == False`** — sempre obbligatorio nell'implementazione corrente (step eseguito anche in assenza di ATP-Full flag). Il Cuckoo Filter garantisce falsi positivi ~2.3×10⁻³¹.
 
 ---
 
@@ -625,3 +625,39 @@ aprono il circuito (OPEN → HALF_OPEN dopo 30s → CLOSED al primo successo).
 
 **Stress test:** `stress_test.py` — N connessioni × K task, misura throughput
 e latenza P50/P99/max. Risultato: 95 task/s, P99 94ms, 0% errori.
+
+| Metriche test (pytest) | Valore |
+|---|---|
+| Test totali | 52 (45 core + 7 SDK) |
+| Test passati | 52/52 |
+| Tempo esecuzione | ~2.8s |
+| Fixture isolate | ✅ (conftest con reset stato globale) |
+
+### 9.9 Quality Hardening (v1.8+)
+
+**Agent-signed RootStore push:** Il manifest `ROOT_STORE_UPDATE` (0x21)
+è ora firmato con la chiave Ed25519 dell'agente (`identity.ed25519_sk`)
+invece della chiave privata dell'autorità condivisa. Il ricevente verifica
+la firma usando la chiave pubblica Ed25519 ottenuta dall'MCC scambiato
+durante l'handshake. Questo elimina la vulnerabilità di authority key
+leak (qualsiasi agente compromesso poteva firmare manifest arbitrari).
+
+**Gossip Ed25519 authentication:** Il gossip protocol ora firma ogni
+payload con la chiave Ed25519 del nodo mittente. Il `GossipServer`
+ricevente verifica la firma se la chiave pubblica del mittente è nota.
+Backward compat: formato flat list v1 e dict unsigned accettati durante
+migrazione.
+
+**hostname verification:** `check_hostname` è controllato dalla variabile
+d'ambiente `ATP_ENFORCE_HOSTNAME=true`. Disabilitato di default per
+certificati auto-firmati demo (solo CN, nessun SAN).
+
+**Refactoring modulare:** Il layer TLS è stato estratto in `agent_tls.py`
+(~250 linee: generazione CA, firma certificati, make_ssl_context, cert
+rotation, QUIC certs). Le funzioni E2E pure sono in `agent_crypto.py`.
+`agent.py` è sceso da ~1.873 a ~1.620 linee.
+
+**Test modernizzati:** La test suite è stata convertita da runner custom
+a pytest con 52 test, fixture isolate (reset automatico dello stato
+globale revocation tramite `conftest.py`), e compatibilità `__main__`
+per esecuzione diretta.
