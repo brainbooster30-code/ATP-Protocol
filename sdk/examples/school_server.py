@@ -169,11 +169,11 @@ async def main():
     local_ip = gethostbyname(gethostname())
     card_file = export_key_card(
         agent_name=SCHOOL_NAME,
-        ed25519_sk=bytes.fromhex("00" * 32),  # placeholder, identità reale
-        ed25519_pk=bytes.fromhex("00" * 32),
+        ed25519_sk=server.identity_sk,
+        ed25519_pk=server.identity_pk,
         host=local_ip,
         port=PORT,
-        mcc_hash="6a65902968167a2f370d",  # hash MCC della scuola
+        mcc_hash=server.identity_mcc_hash,
     )
     print()
     print(f"  🗝️  KEY CARD ESPORTATA: {card_file}")

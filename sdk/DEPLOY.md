@@ -1,23 +1,20 @@
 # Deploy ATP Teacher ↔ School Server
 
 Server e client comunicano via internet **senza toccare firewall né router**.
-Il tunnel ngrok integrato crea automaticamente un indirizzo pubblico per il server.
+Il tunnel **UPnP nativo** integrato (pure Python, zero dipendenze esterne)
+apre la porta sul router automaticamente e restituisce l'IP pubblico.
 
 ---
 
-## 1. SCUOLA — Avvio Server (con tunnel internet automatico)
+## 1. SCUOLA — Avvio Server (con tunnel UPnP automatico)
 
 ```bash
-# Installa pyngrok (basta una volta)
-pip install pyngrok
-
-# Registrati gratis su https://dashboard.ngrok.com/signup
-# Copia il tuo auth token e salvalo:
-#   Windows: setx NGROK_AUTH_TOKEN "tuo_token"
-#   Linux:   echo 'export NGROK_AUTH_TOKEN=tuo_token' >> ~/.bashrc
+# Installa SDK (tunnel UPnP nativo incluso — nessuna dipendenza extra)
+cd ATP/sdk
+pip install -e .
 
 # Avvia il server
-cd ATP/sdk/examples
+cd ../sdk/examples
 python school_server.py
 ```
 
@@ -28,9 +25,12 @@ Output:
   Listening on 127.0.0.1:8443
 ═══════════════════════════════════
 
-  🌐 TUNNEL INTERNET ATTIVO
-  Indirizzo pubblico: 2.tcp.ngrok.io:12345
-  Client: python teacher_client.py 2.tcp.ngrok.io:12345
+  🌐 TUNNEL UPnP ATTIVO
+  Indirizzo pubblico: 84.123.45.67:8443
+  Client: python teacher_client.py 84.123.45.67:8443
+
+  🗝️  KEY CARD ESPORTATA: atp_key_scuola_futura.card
+  Consegna questo file all'insegnante (USB, email, QR code...)
 ```
 
 ---
@@ -39,32 +39,43 @@ Output:
 
 ```bash
 cd ATP/sdk/examples
-python teacher_client.py 2.tcp.ngrok.io:12345
+python teacher_client.py 84.123.45.67:8443
+```
+
+Oppure via Key Card (zero servizi esterni):
+```bash
+python teacher_client.py atp_key_scuola_futura.card
 ```
 
 Output:
 ```
   🏠  ATP Teacher Client — prof-rossi
-  Connessione a: 2.tcp.ngrok.io:12345
+  Connessione a: 84.123.45.67:8443
 
 ✅ Connesso!
 ```
 
 ---
 
-## 3. Senza ngrok (localhost, stessa macchina)
+## 3. Senza UPnP (locale o ngrok fallback)
 
-Se non installi pyngrok, il server mostra:
-
+Se il router non supporta UPnP, il server mostra:
 ```
   📋 Client: python teacher_client.py 127.0.0.1:8443
+```
+
+Per tunnel internet alternativo (ngrok):
+```bash
+pip install pyngrok
+setx NGROK_AUTH_TOKEN "tuo_token"
+python school_server.py
 ```
 
 Client:
 ```bash
 python teacher_client.py                     # localhost
 python teacher_client.py 192.168.1.50:8443   # rete locale
-python teacher_client.py 2.tcp.ngrok.io:12345  # internet via tunnel
+python teacher_client.py 2.tcp.ngrok.io:12345  # internet via ngrok
 ```
 
 ---
@@ -96,6 +107,7 @@ I dati sono salvati in `school_db.json`. Persistono tra riavvii.
 ## 6. Requisiti
 
 - Python 3.10+
-- `pip install pyngrok` (per tunnel internet — opzionale)
-- Account ngrok gratuito (per tunnel internet — opzionale)
+- Tunnel internet: **UPnP nativo** (zero dipendenze, standard library pure Python)
+- `pyngrok` (opzionale) — solo se UPnP non disponibile
+- Account ngrok gratuito (opzionale — solo per fallback ngrok)
 - Nessun firewall da aprire, nessun port forwarding, nessuna VPN

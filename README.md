@@ -149,24 +149,26 @@ Vedi `sdk/examples/teacher_school.py` — 5 use case reali con tunnel internet z
 
 ## Quick Start
 
-### 1. Installa l'SDK
+|### 1. Installa l'SDK
 
 ```bash
 # Dalla directory principale del progetto ATP
 cd sdk
-pip install -e .                    # installazione base
-pip install -e ".[all]"             # tutto (dashboard, tunnel)
-pip install -e ".[tunnel]"          # solo tunnel internet (ngrok)
+pip install -e .                    # installazione base (core + tunnel UPnP nativo)
+pip install -e ".[all]"             # tutto (dashboard, tunnel completo)
+pip install -e ".[tunnel]"          # solo tunnel internet (UPnP nativo, zero dip. extra)
 ```
 
 L'SDK installa automaticamente tutte le dipendenze necessarie:
 `aiohttp`, `blake3`, `cbor2`, `cryptography`.
 
-Se vuoi il tunnel internet zero-config (ngrok):
+**Il tunnel internet non richiede dipendenze esterne** — usa UPnP nativo
+pure Python. Se il router supporta UPnP, apre la porta automaticamente.
+
+Fallback opzionale ngrok (solo se UPnP non disponibile):
 ```bash
 pip install pyngrok
 setx NGROK_AUTH_TOKEN "tuo_token"   # Windows
-# export NGROK_AUTH_TOKEN=tuo_token # Linux/macOS
 ```
 
 ### 2. Usa l'SDK
@@ -208,8 +210,8 @@ python agent_voting.py
 python school_server.py            # terminale 1: avvia server
 python teacher_client.py           # terminale 2: menu interattivo
 
-# Connessione via internet (tunnel auto)
-python teacher_client.py 2.tcp.ngrok.io:12345
+# Connessione via internet (tunnel UPnP locale)
+python teacher_client.py 192.168.1.50:8443
 ```
 
 | Esempio | Agenti | Scenario |
@@ -262,7 +264,9 @@ python teacher_client.py 2.tcp.ngrok.io:12345
 - Cuckoo Filter (FPR ~2.3e-31), RootStore, Degradation Policy, Gossip
 
 ### 🌐 Tunnel internet zero-config
-- Connessione tra agenti su internet senza aprire firewall
+- UPnP nativo (pure Python, zero dipendenze) — apre porta sul router automaticamente
+- Fallback ngrok opzionale se UPnP non disponibile
+- Key Card Ed25519 per connessione diretta (zero servizi esterni)
 
 ### 📊 Dashboard PySide6
 - 5 tab: Overview, Traffic, Connections, Agents, Tasks

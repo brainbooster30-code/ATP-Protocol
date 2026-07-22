@@ -9,12 +9,16 @@ from atp_sdk import SimpleATPClient, SimpleATPServer
 ```
 
 Aggiunge automaticamente il progetto ATP padre a `sys.path`.
-Espone le classi pubbliche `SimpleATPClient` e `SimpleATPServer`.
+Espone le classi pubbliche, le funzioni di Key Exchange e AutoTunnel.
 
 | Name | Type | Description |
 |------|------|-------------|
 | `SimpleATPClient` | `class` | Client ATP asincrono — connect, chat, send, echo, close |
 | `SimpleATPServer` | `class` | Server ATP asincrono — start, stop, on_task, register_handler |
+| `export_key_card` | `fn` | Esporta Key Card Ed25519 firmata (file `.card`) |
+| `import_key_card` | `fn` | Importa Key Card e verifica firma Ed25519 |
+| `connect_with_key_card` | `fn` | Importa Key Card + connette in un passo |
+| `AutoTunnel` | `class` | Tunnel UPnP nativo (pure Python) — zero dipendenze esterne |
 | `__version__` | `str` | `"1.7"` |
 
 ---
@@ -334,20 +338,21 @@ async with SimpleATPServer() as server:
 
 ---
 
-## Class: `Tunnel`
+## Class: `AutoTunnel`
 
 ```python
-from atp_sdk.tunnel import Tunnel
+from atp_sdk.tunnel import AutoTunnel
 
-class Tunnel:
+class AutoTunnel:
     def __init__(self)
     async def start(self, local_port=8443) -> str
     async def stop() -> None
     public_url: str
+    method: str
 ```
 
-Tunnel internet zero-config via ngrok. Crea un URL pubblico per il server senza
-aprire firewall o configurare port forwarding.
+Tunnel internet zero-config con **UPnP nativo** (pure Python, zero dipendenze esterne).
+Sceglie automaticamente: UPnP → locale (fallback).
 
 ### `__init__()`
 
@@ -359,32 +364,125 @@ Inizializza il tunnel (non ancora attivo).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `local_port` | `int` | `8443` | Porta locale da esporre |
+| `local_port` | `int` | `8443` | Porta locale da esporre via UPnP |
 
 | Returns | Description |
 |---------|-------------|
-| `str` | URL pubblico (`"2.tcp.ngrok.io:12345"`) o `"127.0.0.1:8443"` (fallback) |
+| `str` | URL pubblico (`"84.123.45.67:8443"`) o `"127.0.0.1:8443"` (fallback) |
 
-Se `pyngrok` è installato e `NGROK_AUTH_TOKEN` è impostato, crea un tunnel TCP
-pubblico. Altrimenti fa fallback a localhost.
+Tenta UPnP IGD (Internet Gateway Device) tramite SSDP discovery puro Python.
+Se il router supporta UPnP, apre la porta e restituisce l'IP pubblico.
+Fallback a localhost se UPnP non disponibile.
 
 ---
 
 ### `async stop() -> None`
 
-Chiude il tunnel ngrok.
+Chiude il tunnel: rimuove il port forwarding UPnP.
 
 ---
 
 ### `public_url: str` (property)
 
-URL pubblico attuale (es. `"2.tcp.ngrok.io:12345"`) o stringa vuota.
+URL pubblico attuale (es. `"84.123.45.67:8443"`) o stringa vuota.
+
+### `method: str` (property)
+
+Metodo attivo: `"UPNP"` o `"local"`.
 
 ```python
-tunnel = Tunnel()
+tunnel = AutoTunnel()
 url = await tunnel.start(8443)
-print(f"Indirizzo pubblico: {url}")   # 2.tcp.ngrok.io:12345
+print(f"Indirizzo pubblico: {url}")       # 84.123.45.67:8443
+print(f"Metodo: {tunnel.method}")         # UPNP
 await tunnel.stop()
+```
+
+---
+
+## Module: `atp_sdk.key_exchange`
+
+```python
+from atp_sdk.key_exchange import export_key_card, import_key_card, connect_with_key_card
+```
+
+Key Exchange Ed25519 per connessione diretta tra agenti.
+Nessun servizio esterno: né UPnP, né ngrok, né port forwarding.
+Due agenti si scambiano le chiavi pubbliche fuori banda via Key Card (file `.card`).
+
+### `export_key_card(agent_name, ed25519_sk, ed25519_pk, host, port, mcc_hash="", output_path="") -> str`
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `agent_name` | `str` | *required* | Nome dell'agente (es. `"scuola-futura"`) |
+| `ed25519_sk` | `bytes` | *required* | Chiave segreta Ed25519 (per firmare la card) |
+| `ed25519_pk` | `bytes` | *required* | Chiave pubblica Ed25519 |
+| `host` | `str` | *required* | IP pubblico o hostname del server |
+| `port` | `int` | *required* | Porta del server |
+| `mcc_hash` | `str` | `""` | Hash MCC dell'agente (opzionale per verifica) |
+| `output_path` | `str` | `""` | Dove salvare il file (vuoto = genera nome automatico) |
+
+| Returns | Description |
+|---------|-------------|
+| `str` | Percorso del file `.card` creato |
+
+Crea un file JSON firmato Ed25519 contenente le credenziali dell'agente.
+Il file viene consegnato all'altro agente (USB, email, QR code, WhatsApp...).
+
+```python
+card_file = export_key_card(
+    agent_name="scuola-futura",
+    ed25519_sk=secret_key,
+    ed25519_pk=public_key,
+    host="192.168.1.50",
+    port=8443,
+    mcc_hash=mcc_hash,
+)
+print(f"Consegna questo file: {card_file}")  # atp_key_scuola_futura.card
+```
+
+---
+
+### `import_key_card(card_path) -> dict`
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `card_path` | `str` | *required* | Percorso del file `.card` ricevuto dall'altro agente |
+
+| Returns | Description |
+|---------|-------------|
+| `dict` | `{agent_name, ed25519_pk (bytes), host, port, mcc_hash}` |
+
+| Raises | Description |
+|--------|-------------|
+| `ValueError` | Firma Ed25519 non valida o formato errato |
+
+Verifica automaticamente la firma Ed25519. Se non valida, lancia `ValueError`.
+
+```python
+peer = import_key_card("atp_key_scuola_futura.card")
+print(f"Agente: {peer['agent_name']} @ {peer['host']}:{peer['port']}")
+```
+
+---
+
+### `connect_with_key_card(card_path, timeout=30.0) -> Optional[SimpleATPClient]`
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `card_path` | `str` | *required* | Percorso del file `.card` dell'altro agente |
+| `timeout` | `float` | `30.0` | Timeout di connessione in secondi |
+
+| Returns | Description |
+|---------|-------------|
+| `SimpleATPClient \| None` | Client connesso, o `None` se fallisce |
+
+Combina `import_key_card()` e `connect()` in una singola chiamata.
+
+```python
+client = await connect_with_key_card("atp_key_scuola_futura.card")
+if client:
+    print(await client.chat("Ciao scuola!"))
 ```
 
 ---

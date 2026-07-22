@@ -20,9 +20,10 @@ CONNECTION_SETUP_TIMEOUT_MS = 10_000
 STREAM_CLOSE_TIMEOUT_MS     = 5_000
 GRACE_PERIOD_S              = 300
 
-# ── Gossip (structure reserved for future) ────────────────────────────────────
+# ── Gossip (peer-to-peer revocation exchange) ─────────────────────────────────
 GOSSIP_INTERVAL_S = 5
 GOSSIP_FANOUT     = 3
+GOSSIP_PORT       = 8444  # separate TCP port for gossip messages
 
 # ── Network ───────────────────────────────────────────────────────────────────
 SERVER_HOST = "127.0.0.1"

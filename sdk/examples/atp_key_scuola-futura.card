@@ -1,0 +1,13 @@
+{
+  "card": {
+    "version": 1,
+    "type": "ATP_KEY_CARD",
+    "agent_name": "scuola-futura",
+    "ed25519_pk": "0000000000000000000000000000000000000000000000000000000000000000",
+    "host": "100.93.145.80",
+    "port": 8443,
+    "mcc_hash": "6a65902968167a2f370d",
+    "created_at": 1784485556
+  },
+  "signature": "d396b9e0293f0d9c7d63421123d051266088c78df44a8dcbf622406870ebdd3a61370d111fe9696e51e0bb40aae712b6b11b13c34cebf1e504b2d2042d968500"
+}

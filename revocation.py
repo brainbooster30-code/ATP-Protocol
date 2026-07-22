@@ -10,6 +10,7 @@ import time
 import math
 import struct
 import logging
+import asyncio
 import threading
 import json
 from typing import Optional
@@ -328,87 +329,161 @@ class DegradationPolicy:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  Gossip Protocol  —  fanout-based serial_number exchange
+#  Gossip Protocol  —  fanout-based serial_number exchange over TCP
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class GossipPeer:
     """Represents one gossip peer with its known revocation set."""
 
-    def __init__(self, peer_id: str, address: tuple[str, int]):
+    def __init__(self, peer_id: str, host: str, gossip_port: int):
         self.peer_id = peer_id
-        self.address = address
+        self.host = host
+        self.gossip_port = gossip_port
         self.known_serials: set[bytes] = set()
         self.last_sync: float = 0.0
 
 
 class GossipProtocol:
     """
-    Simple gossip protocol for distributing revocation information.
+    Gossip protocol for distributing revocation information over TCP.
 
     Every GOSSIP_INTERVAL_S seconds, each node sends its known revoked
-    serial_numbers to GOSSIP_FANOUT randomly selected peers.
+    serial_numbers to GOSSIP_FANOUT randomly selected peers as CBOR payloads
+    over plain TCP (no TLS — gossip is authenticated via Ed25519 signatures
+    in a future version).
     """
 
     def __init__(self, node_id: str, monitor=None):
         self.node_id = node_id
         self.monitor = monitor
         self._peers: dict[str, GossipPeer] = {}
-        self._lock = threading.Lock()
+        self._lock = asyncio.Lock()
         self._revoked_serials: set[bytes] = set()
 
-    def add_peer(self, peer_id: str, host: str, port: int):
-        with self._lock:
-            if peer_id not in self._peers:
-                self._peers[peer_id] = GossipPeer(peer_id, (host, port))
-                logger.info("Gossip: added peer %s at %s:%s", peer_id, host, port)
+    def add_peer(self, peer_id: str, host: str, gossip_port: int = 8444):
+        """Register a gossip peer."""
+        if peer_id not in self._peers:
+            self._peers[peer_id] = GossipPeer(peer_id, host, gossip_port)
+            logger.info("Gossip: added peer %s at %s:%s", peer_id, host, gossip_port)
 
     def remove_peer(self, peer_id: str):
-        with self._lock:
-            self._peers.pop(peer_id, None)
+        self._peers.pop(peer_id, None)
 
     def mark_revoked(self, serial_number: bytes):
         """Record a serial_number as revoked and prepare to gossip it."""
-        with self._lock:
-            self._revoked_serials.add(serial_number)
-            for peer in self._peers.values():
-                peer.known_serials.add(serial_number)
+        self._revoked_serials.add(serial_number)
+        for peer in self._peers.values():
+            peer.known_serials.add(serial_number)
 
     def is_revoked(self, serial_number: bytes) -> bool:
-        with self._lock:
-            return serial_number in self._revoked_serials
+        return serial_number in self._revoked_serials
 
     async def gossip_round(self):
         """
-        Execute one gossip round: send known revoked serials to fanout peers.
-        (In a full implementation, this would open connections and exchange data.)
+        Execute one gossip round: connect to fanout peers over TCP
+        and send revoked serials as CBOR-encoded list.
         """
-        import asyncio, secrets
-        with self._lock:
-            peers = list(self._peers.values())
-            if not peers or not self._revoked_serials:
-                return
+        import asyncio, secrets, cbor2 as _cbor2
+        peers = list(self._peers.values())
+        if not peers or not self._revoked_serials:
+            return
 
-            fanout = min(len(peers), 3)
-            targets = secrets.SystemRandom().sample(peers, fanout)
+        fanout = min(len(peers), 3)
+        targets = secrets.SystemRandom().sample(peers, fanout)
 
-        serials_hex = [s.hex()[:8] for s in self._revoked_serials]
-        logger.info("Gossip round: %d revoked serials → %d peers: %s",
-                     len(self._revoked_serials), fanout, serials_hex)
+        serials_list = list(self._revoked_serials)
+        payload = _cbor2.dumps([s.hex() for s in serials_list])
+        logger.info("Gossip round: %d revoked serials → %d peers",
+                     len(serials_list), fanout)
 
-        # In production, each target would receive a CONTROL_REVOKE_NOTIFY frame
         for peer in targets:
-            if self.monitor:
-                self.monitor.add_event("GOSSIP_SEND", {
-                    "peer": peer.peer_id,
-                    "serials": serials_hex,
-                })
-            await asyncio.sleep(0)  # yield
+            try:
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(peer.host, peer.gossip_port),
+                    timeout=3.0,
+                )
+                # Send 4-byte length prefix + CBOR payload
+                import struct
+                writer.write(struct.pack("!I", len(payload)) + payload)
+                await writer.drain()
+                writer.close()
+                peer.last_sync = time.time()
+                if self.monitor:
+                    self.monitor.add_event("GOSSIP_SEND", {
+                        "peer": peer.peer_id,
+                        "serials_count": len(serials_list),
+                    })
+                logger.debug("Gossip: sent %d serials to %s:%s",
+                             len(serials_list), peer.host, peer.gossip_port)
+            except (asyncio.TimeoutError, ConnectionError, OSError) as exc:
+                logger.warning("Gossip: failed to reach %s:%s — %s",
+                               peer.host, peer.gossip_port, exc)
+                if self.monitor:
+                    self.monitor.add_event("GOSSIP_FAILED", {
+                        "peer": peer.peer_id,
+                        "error": str(exc),
+                    })
 
     async def gossip_loop(self, interval_s: int = 5):
         """Run periodic gossip rounds."""
         while True:
             await asyncio.sleep(interval_s)
             await self.gossip_round()
+
+
+class GossipServer:
+    """
+    Lightweight TCP server that receives revocation serials from gossip peers.
+
+    Runs on GOSSIP_PORT (default 8444) alongside the main ATP server.
+    Incoming payloads are CBOR-encoded lists of hex serial numbers.
+    """
+
+    def __init__(self, monitor=None):
+        self.monitor = monitor
+        self._server: Optional[asyncio.AbstractServer] = None
+
+    async def start(self, host: str = "127.0.0.1", port: int = 8444):
+        self._server = await asyncio.start_server(
+            self._on_gossip_connect, host=host, port=port,
+        )
+        logger.info("GossipServer listening on %s:%s", host, port)
+
+    async def stop(self):
+        if self._server:
+            self._server.close()
+            await self._server.wait_closed()
+
+    async def _on_gossip_connect(self, reader, writer):
+        """Handle an incoming gossip connection."""
+        peer = writer.get_extra_info("peername")
+        try:
+            raw_len = await asyncio.wait_for(reader.readexactly(4), timeout=5)
+            length = struct.unpack("!I", raw_len)[0]
+            if length == 0 or length > 1024 * 1024:
+                logger.warning("Gossip: invalid length %d from %s", length, peer)
+                return
+            data = await asyncio.wait_for(reader.readexactly(length), timeout=10)
+            import cbor2 as _cbor2
+            serials_hex = _cbor2.loads(data)
+            count = 0
+            for s_hex in serials_hex:
+                serial = bytes.fromhex(s_hex)
+                revoke_serial(serial)
+                count += 1
+            logger.info("Gossip: received %d revoked serials from %s", count, peer)
+            if self.monitor:
+                self.monitor.add_event("GOSSIP_RECEIVE", {
+                    "peer": str(peer),
+                    "serials_count": count,
+                })
+        except (asyncio.IncompleteReadError, asyncio.TimeoutError, ValueError, Exception) as exc:
+            logger.warning("Gossip: error receiving from %s — %s", peer, exc)
+        finally:
+            try:
+                writer.close()
+            except Exception:
+                pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

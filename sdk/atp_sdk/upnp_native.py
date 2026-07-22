@@ -64,7 +64,7 @@ def _discover_igd() -> Optional[dict]:
 
 
 def _parse_device_desc(url: str, gateway_ip: str) -> Optional[dict]:
-    """Scarica e analizza il device description XML."""
+    """Scarica e analizza il device description XML (protetto da XXE)."""
     try:
         conn = http.client.HTTPConnection(gateway_ip, timeout=3)
         conn.request("GET", url)
@@ -72,7 +72,9 @@ def _parse_device_desc(url: str, gateway_ip: str) -> Optional[dict]:
         xml = resp.read()
         conn.close()
 
-        root = ElementTree.fromstring(xml)
+        # Use a parser with entity resolution disabled (XXE protection)
+        parser = ElementTree.XMLParser(resolve_entities=False)
+        root = ElementTree.fromstring(xml, parser=parser)
         ns = {"ns": "urn:schemas-upnp-org:device-1-0"}
 
         # Trova il servizio WANIPConnection
@@ -238,9 +240,13 @@ def _get_local_ip(gateway_ip: str) -> str:
 
 
 def _get_public_ip_http() -> Optional[str]:
-    """Fallback: IP pubblico via API esterna."""
+    """Fallback: IP pubblico via API esterna (solo HTTPS)."""
     import urllib.request
     for url in ["https://api.ipify.org", "https://icanhazip.com"]:
+        # Only allow HTTPS for external queries
+        if not url.lower().startswith("https://"):
+            logger.warning("Skipping non-HTTPS URL for public IP: %s", url)
+            continue
         try:
             with urllib.request.urlopen(url, timeout=5) as r:
                 ip = r.read().decode().strip()

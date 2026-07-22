@@ -7,8 +7,8 @@ Scenario:
   Sede B (Milano) — abbonamento Claude (Anthropic)
 
   Ogni sede ha il proprio server ATP. Le due sedi si connettono via internet
-  (tunnel ngrok) e condividono le rispettive AI aziendali senza esporre
-  le chiavi API all'altra sede.
+  tramite **Key Card Ed25519** (zero servizi esterni) e condividono le
+  rispettive AI aziendali senza esporre le chiavi API all'altra sede.
 
   Use case:
     1. Sede A chiede una risposta da Claude (AI di Sede B)
@@ -17,8 +17,13 @@ Scenario:
     4. Le richieste passano tutte attraverso il protocollo ATP, con identità
        crittografica verificabile (MCC)
 
-  Esegui su Sede A:  python sede_a.py
-  Esegui su Sede B:  python sede_b.py
+  Ogni sede esporta una Key Card firmata Ed25519.
+  Le Key Card vengono scambiate fuori banda (USB, email, QR, WhatsApp...)
+  e usate per la connessione diretta — niente ngrok, niente UPnP.
+
+  Esegui su Sede A:  python azienda.py sede_a <ip_sede_b>
+  Esegui su Sede B:  python azienda.py sede_b <ip_sede_a>
+  Demo locale:       python azienda.py both
 """
 import asyncio, sys, os, json, logging
 
@@ -75,7 +80,22 @@ async def run_sede_a(sede_b_host: str, sede_b_port: int):
     print(f"  [SEDE A] Server attivo su :{PORTA_SEDE_A}")
     print(f"  [SEDE A] AI offerta: ChatGPT (OpenAI)")
 
+    # Esporta Key Card di Sede A
+    from atp_sdk.key_exchange import export_key_card
+    card_a = export_key_card(
+        agent_name="sede-a-roma",
+        ed25519_sk=server_a.identity_sk,
+        ed25519_pk=server_a.identity_pk,
+        host="127.0.0.1", port=PORTA_SEDE_A,
+        mcc_hash=server_a.identity_mcc_hash,
+        output_path="sede_a_roma.card",
+    )
+    print(f"  🗝️  Key Card Sede A: {card_a}")
+    print(f"     Da consegnare a Sede B (USB/email/QR/WhatsApp)")
+    print()
+
     # ── Connetti a Sede B per ottenere Claude ───────────────────────
+    # Prova connessione diretta host:port
     client_b = SimpleATPClient("sede-a-roma → sede-b-milano")
     ok = await client_b.connect(host=sede_b_host, port=sede_b_port)
     if not ok:
@@ -150,7 +170,22 @@ async def run_sede_b(sede_a_host: str, sede_a_port: int):
     print(f"  [SEDE B] Server attivo su :{PORTA_SEDE_B}")
     print(f"  [SEDE B] AI offerta: Claude (Anthropic)")
 
+    # Esporta Key Card di Sede B
+    from atp_sdk.key_exchange import export_key_card
+    card_b = export_key_card(
+        agent_name="sede-b-milano",
+        ed25519_sk=server_b.identity_sk,
+        ed25519_pk=server_b.identity_pk,
+        host="127.0.0.1", port=PORTA_SEDE_B,
+        mcc_hash=server_b.identity_mcc_hash,
+        output_path="sede_b_milano.card",
+    )
+    print(f"  🗝️  Key Card Sede B: {card_b}")
+    print(f"     Da consegnare a Sede A (USB/email/QR/WhatsApp)")
+    print()
+
     # ── Connetti a Sede A per ottenere ChatGPT ─────────────────────
+    # Prova connessione diretta host:port (o Key Card tramite import_key_card)
     client_a = SimpleATPClient("sede-b-milano → sede-a-roma")
     ok = await client_a.connect(host=sede_a_host, port=sede_a_port)
     if not ok:
@@ -246,9 +281,13 @@ async def main():
     else:
         print("  Usa: python azienda.py [sede_a | sede_b | both] [ip_sede_remota]")
         print("  Esempi:")
-        print("    python azienda.py both                          # demo locale")
-        print("    python azienda.py sede_a 2.tcp.ngrok.io:8481    # Sede A → B via tunnel")
-        print("    python azienda.py sede_b 2.tcp.ngrok.io:8480    # Sede B → A via tunnel")
+        print("    python azienda.py both                              # demo locale")
+        print("    python azienda.py sede_a 192.168.1.100              # Sede A → B via LAN")
+        print("    python azienda.py sede_b 192.168.1.50               # Sede B → A via LAN")
+        print("")
+        print("  🗝️  Ogni sede esporta automaticamente la propria Key Card (.card)")
+        print("     per connessione diretta senza servizi esterni: scambiate il file")
+        print("     via USB/email/QR/WhatsApp e usate connect_with_key_card().")
 
 if __name__ == "__main__":
     asyncio.run(main())

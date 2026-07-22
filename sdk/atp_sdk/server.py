@@ -72,6 +72,9 @@ class SimpleATPServer:
         self._mcc: Optional["MCC"] = None  # created in start()
         self._server: Optional[asyncio.AbstractServer] = None
         self._task: Optional[asyncio.Task[None]] = None
+        self._gossip_task: Optional[asyncio.Task[None]] = None
+        self._gossip_server_task: Optional[asyncio.Task[None]] = None
+        self._gossip_server = None
         self._running: bool = False
         self._cert_path: str = ""
         self._key_path: str = ""
@@ -127,6 +130,16 @@ class SimpleATPServer:
             addr[0], addr[1], self.agent_name,
         )
 
+        # Start background gossip protocol
+        from revocation import get_gossip, GossipServer
+        gossip = get_gossip(node_id=f"sdk-server-{host}:{port}")
+        self._gossip_task = asyncio.create_task(gossip.gossip_loop(interval_s=5))
+        from config import GOSSIP_PORT
+        self._gossip_server = GossipServer(monitor=self.monitor)
+        self._gossip_server_task = asyncio.create_task(
+            self._gossip_server.start(host=host, port=GOSSIP_PORT)
+        )
+
         # Run serve_forever in background
         self._task = asyncio.create_task(self._serve_forever())
 
@@ -156,6 +169,13 @@ class SimpleATPServer:
             except asyncio.CancelledError:
                 pass
             self._task = None
+
+        if self._gossip_server:
+            await self._gossip_server.stop()
+        if self._gossip_task:
+            self._gossip_task.cancel()
+        if self._gossip_server_task:
+            self._gossip_server_task.cancel()
 
         if self._server:
             self._server.close()

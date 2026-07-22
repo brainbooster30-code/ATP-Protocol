@@ -27,12 +27,15 @@ class ATPServer:
     def __init__(self, monitor: Optional[Monitor] = None):
         self.monitor = monitor
         self._server: Optional[asyncio.AbstractServer] = None
+        self._gossip_task: Optional[asyncio.Task] = None
+        self._gossip_server_task: Optional[asyncio.Task] = None
+        self._gossip_server = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._running = False
         self.identity = AgentIdentity(agent_name="atp-server")
 
     async def start(self, host: str = SERVER_HOST, port: int = SERVER_PORT):
-        """Start the TCP/TLS server and background gossip loop."""
+        """Start the TCP/TLS server, background gossip loop, and gossip server."""
         self._loop = asyncio.get_running_loop()
 
         # Build SSL context with CA-signed cert (mutual TLS)
@@ -49,11 +52,18 @@ class ATPServer:
         addr = self._server.sockets[0].getsockname()
         logger.info("ATP Server listening on %s:%s (TLS mutual)", addr[0], addr[1])
 
-        # Start background gossip loop
-        from revocation import get_gossip
+        # Start background gossip protocol
+        from revocation import get_gossip, GossipServer
         gossip = get_gossip(node_id=f"server-{host}:{port}")
         self._gossip_task = asyncio.create_task(gossip.gossip_loop(interval_s=5))
         logger.info("Gossip protocol started (interval=5s, fanout=3)")
+
+        # Start gossip TCP server for incoming revocation data
+        from config import GOSSIP_PORT
+        self._gossip_server = GossipServer(monitor=self.monitor)
+        self._gossip_server_task = asyncio.create_task(
+            self._gossip_server.start(host=host, port=GOSSIP_PORT)
+        )
 
         # Keep running until cancelled
         try:
@@ -65,10 +75,18 @@ class ATPServer:
             self._running = False
             if self._gossip_task:
                 self._gossip_task.cancel()
+            if self._gossip_server_task:
+                self._gossip_server_task.cancel()
 
     async def stop(self):
-        """Gracefully stop the server."""
+        """Gracefully stop the server, gossip loop, and gossip server."""
         self._running = False
+        if self._gossip_server:
+            await self._gossip_server.stop()
+        if self._gossip_task:
+            self._gossip_task.cancel()
+        if self._gossip_server_task:
+            self._gossip_server_task.cancel()
         if self._server:
             self._server.close()
             await self._server.wait_closed()

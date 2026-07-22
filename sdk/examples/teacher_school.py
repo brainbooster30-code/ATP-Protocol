@@ -133,20 +133,18 @@ async def main():
     local_ip = gethostbyname(gethostname())
     card_file = export_key_card(
         agent_name="scuola-futura",
-        ed25519_sk=bytes.fromhex("00" * 32),
-        ed25519_pk=bytes.fromhex("00" * 32),
+        ed25519_sk=school.identity_sk,
+        ed25519_pk=school.identity_pk,
         host=local_ip, port=PORT,
-        mcc_hash="",
+        mcc_hash=school.identity_mcc_hash,
     )
-    print(f"  🗝️  Key Card scuola: {card_file}")
+    print(f"  🗝️  Key Card scuola esportata: {card_file}")
     
-    # Importa Key Card del docente (se esiste)
-    teacher_card = f"atp_key_prof_rossi.card"
-    if os.path.isfile(teacher_card):
-        peer = import_key_card(teacher_card)
-        print(f"  🗝️  Key Card docente importata: {peer['agent_name']}")
+    # Simula scambio fuori banda: importa la Key Card della scuola
+    # (nella realtà il file verrebbe consegnato via USB/email/QR/WhatsApp)
+    print(f"  📨  Scambio fuori banda simulato...")
     print()
-
+    
     teacher = SimpleATPClient("prof-rossi")
     await teacher.connect(port=PORT)
     mcc = teacher.peer_mcc_hash

@@ -7,10 +7,12 @@ in reti federate sicure in poche righe di codice.
 
 ```bash
 cd ATP/sdk
-pip install -e .              # core: aiohttp, blake3, cbor2, cryptography
-pip install -e ".[tunnel]"    # + ngrok per tunnel internet zero-config
+pip install -e .              # core + tunnel UPnP nativo: aiohttp, blake3, cbor2, cryptography
 pip install -e ".[all]"       # tutto incluso dashboard
 ```
+
+**Il tunnel internet non richiede dipendenze esterne** — UPnP nativo
+pure Python. Se il router supporta UPnP, apre la porta automaticamente.
 
 ## Architettura
 
@@ -252,23 +254,56 @@ async with SimpleATPServer() as server:
 
 ---
 
-## Tunnel
+## AutoTunnel
 
-Zero-config internet connectivity via ngrok.
+Tunnel internet zero-config con **UPnP nativo** (pure Python, zero dipendenze).
+Sceglie automaticamente: UPnP → locale (fallback).
 
 ```python
-from atp_sdk.tunnel import Tunnel
+from atp_sdk.tunnel import AutoTunnel
 
-tunnel = Tunnel()
+tunnel = AutoTunnel()
 public_url = await tunnel.start(8443)
-# → "2.tcp.ngrok.io:12345"
+# → "84.123.45.67:8443" (UPnP) o "127.0.0.1:8443" (locale)
 
+print(f"Metodo: {tunnel.method}")   # "UPNP" o "local"
 await tunnel.stop()
 ```
 
-Se `pyngrok` non è installato, fa fallback a `127.0.0.1:8443`.
+| Proprietà | Tipo | Descrizione |
+|-----------|------|-------------|
+| `public_url` | `str` | URL pubblico (`host:port`) o vuoto |
+| `method` | `str` | Metodo attivo: `"UPNP"` o `"local"` |
 
-Richiede: `pip install pyngrok` + `NGROK_AUTH_TOKEN` (gratuito da ngrok.com).
+## Key Exchange Ed25519
+
+Scambio chiavi fuori banda tramite Key Card — nessun servizio esterno.
+Un file `.card` firmato Ed25519 contiene le credenziali dell'agente.
+
+```python
+from atp_sdk.key_exchange import export_key_card, import_key_card, connect_with_key_card
+
+# Export: crea Key Card firmata
+card_file = export_key_card(
+    agent_name="scuola-futura",
+    ed25519_sk=identity_sk,
+    ed25519_pk=identity_pk,
+    host="192.168.1.50", port=8443,
+    mcc_hash=mcc_hash,
+)
+# → atp_key_scuola_futura.card
+
+# Import: verifica firma + restituisce credenziali
+peer = import_key_card(card_file)
+print(peer["agent_name"], peer["host"], peer["port"])
+
+# Connect: import + connect in un passo
+client = await connect_with_key_card(card_file)
+if client:
+    print(await client.chat("Ciao!"))
+```
+
+Raises `ValueError` se la firma Ed25519 non è valida.
 
 ---
 
@@ -322,7 +357,7 @@ cd ATP/sdk/examples
 python research_assistant.py          # 3 agenti, pipeline ricerca
 python school_server.py               # avvia server
 python teacher_client.py              # menu interattivo (localhost)
-python teacher_client.py 2.tcp.ngrok.io:12345  # via tunnel internet
+python teacher_client.py 192.168.1.50:8443  # via tunnel UPnP
 ```
 
 ---
@@ -358,17 +393,21 @@ asyncio.run(main())
 ### Server + Client su due macchine diverse via internet
 
 ```bash
-# Macchina 1 (server): installa pyngrok, imposta NGROK_AUTH_TOKEN
-pip install pyngrok
-setx NGROK_AUTH_TOKEN "tuo_token"
+# Macchina 1 (server): installazione base (UPnP nativo, senza dipendenze extra)
+pip install -e .
 python school_server.py
-# Output: 🌐 Indirizzo pubblico: 2.tcp.ngrok.io:12345
+# Output: 🌐 Indirizzo pubblico: 84.123.45.67:8443 (UPnP)
+#
+# Se il router non supporta UPnP, installa pyngrok come fallback:
+# pip install pyngrok
+# setx NGROK_AUTH_TOKEN "tuo_token"
+# python school_server.py
 
 # Macchina 2 (client):
-python teacher_client.py 2.tcp.ngrok.io:12345
+python teacher_client.py 84.123.45.67:8443
 ```
 
-Nessun firewall, nessun port forwarding, nessuna VPN.
+Nessun firewall, nessun port forwarding, nessuna VPN, nessuna dipendenza obbligatoria.
 
 ### Custom task handler
 
@@ -437,4 +476,5 @@ Authority separate). Disattivare per produzione.
 - `blake3` ≥ 0.3 — hash crittografico (fallback BLAKE2b)
 - `cbor2` ≥ 5.4 — codifica frame
 - `cryptography` ≥ 41.0 — TLS, chiavi, firme Ed25519/X25519
-- `pyngrok` ≥ 7.0 (opzionale) — tunnel internet zero-config
+- Tunnel internet: **UPnP nativo** (zero dipendenze, standard library pure Python)
+- `pyngrok` (opzionale) — solo se UPnP non disponibile

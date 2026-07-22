@@ -597,6 +597,20 @@ class ATPAgent:
                     await self._send_frame(health_resp)
                 except Exception:
                     pass
+            elif ft == 0x11:
+                """CONTROL_REVOKE_NOTIFY — receive revocation serials from a connected ATP peer."""
+                serials = frame.get("serial_numbers", [])
+                from revocation import revoke_serial
+                count = 0
+                for s in serials:
+                    revoke_serial(bytes(s))
+                    count += 1
+                logger.info("Revoke notify: %d serials received via ATP", count)
+                if self.monitor:
+                    self.monitor.add_event("REVOKE_NOTIFY", {
+                        "conn_id": self._conn_id,
+                        "serials_count": count,
+                    })
             elif ft == 0x12:
                 logger.info("Received SHUTDOWN_ACK — closing cleanly")
             elif ft == 0x15:
