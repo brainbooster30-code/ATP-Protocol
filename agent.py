@@ -394,6 +394,8 @@ class ATPAgent:
         self._writer = writer
         self._conn_id = uuid.uuid4().hex[:12]
 
+        from config import HANDSHAKE_TIMEOUT_S
+
         if self.monitor:
             self.monitor.add_event(CONNECTION_OPEN, {
                 "conn_id": self._conn_id,
@@ -408,9 +410,15 @@ class ATPAgent:
 
         try:
             if self.is_server:
-                await self._server_handshake(reader, writer)
+                await asyncio.wait_for(
+                    self._server_handshake(reader, writer),
+                    timeout=HANDSHAKE_TIMEOUT_S,
+                )
             else:
-                await self._client_handshake(reader, writer)
+                await asyncio.wait_for(
+                    self._client_handshake(reader, writer),
+                    timeout=HANDSHAKE_TIMEOUT_S,
+                )
 
             self.bound = True
             self._setup_e2e()
@@ -964,6 +972,9 @@ class ATPAgent:
         manifest_data = {
             "manifest_version": 1,
             "manifest_id": os.urandom(16),
+            "manifest_nonce": os.urandom(16),     # anti-replay
+            "manifest_ts": int(time.time()),       # freshness window
+            "rootstore_version": rs._version,      # monotonic counter
             "timestamp": int(time.time()),
             "authority_id": self.identity.agent_name,
             "authorities": [

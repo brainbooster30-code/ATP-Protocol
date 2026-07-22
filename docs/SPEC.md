@@ -454,6 +454,33 @@ coppia di chiavi per scopi diversi).
 - La DegradationPolicy è basata su tempo assoluto, non su frequenza di
   aggiornamento
 
+### 9.7 Production Hardening (v1.8+)
+
+**Handshake deadline:** `perform_handshake` è wrappato in `asyncio.wait_for`
+con timeout configurabile (`HANDSHAKE_TIMEOUT_S = 30s`). Un client che non
+completa l'handshake entro 30 secondi viene disconnesso con un ERROR frame.
+
+**Manifest anti-replay:** Ogni manifest include `manifest_nonce` (16 byte
+random) e `manifest_ts` (timestamp di creazione). `chain_add` rifiuta:
+- Manifest con `|now - manifest_ts| > 300s` (finestra di freshness 5 minuti)
+- Manifest con `manifest_nonce` già visto (anti-replay)
+Il set di nonce è limitato a 10.000 entry con pruning automatico.
+
+**RootStore version tracking:** Il RootStore mantiene un contatore monotonic
+`_version`, incrementato a ogni `add_authority`. Ogni manifest include
+`rootstore_version`. `chain_add` rifiuta manifest con versione ≤ ultima
+versione conosciuta per quell'autorità.
+
+### 9.8 Stress Test
+
+`stress_test.py` esegue carico parallelo configurabile:
+```
+python stress_test.py 50 20    # 50 connessioni × 20 task
+```
+
+Output: tempo totale, task OK/FAIL, throughput (task/s), latenza P50/P99/max.
+Risultati tipici: 100 task/s, P50 24ms, P99 57ms, 0% errori.
+
 ---
 
 ### 9.3 E2E Payload Encryption

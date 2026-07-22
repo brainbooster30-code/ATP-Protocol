@@ -177,6 +177,9 @@ class RootStore:
         self._persist_path = path or os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "root_store.json"
         )
+        self._seen_nonces: set[bytes] = set()           # anti-replay
+        self._manifest_ts_latest: dict[str, int] = {}   # per-authority freshness
+        self._version: int = 1                           # monotonic, increments on changes
         self._manifest: dict = {
             "version": 1,
             "authorities": {},    # authority_id → {"pk_hex": str, "added": int, "expires": int}
@@ -236,11 +239,12 @@ class RootStore:
                       ttl_seconds: int = 86400 * 365) -> bool:
         """Add or update a trusted authority."""
         with self._lock:
-            self._manifest["authorities"][authority_id] = {
-                "pk": public_key,
-                "added": int(time.time()),
-                "expires": int(time.time()) + ttl_seconds,
+            self._manifest['authorities'][authority_id] = {
+                'pk': public_key,
+                'added': int(time.time()),
+                'expires': int(time.time()) + ttl_seconds,
             }
+            self._version += 1
             self._save()
             logger.info("RootStore: added authority %s", authority_id)
             return True
@@ -285,6 +289,36 @@ class RootStore:
                 return False
             # Re-serialize without signature for verification
             payload = _cbor2.dumps(manifest, canonical=True)
+
+            # Anti-replay: check nonce and timestamp freshness
+            manifest_nonce = manifest.get("manifest_nonce", b"")
+            manifest_ts = manifest.get("manifest_ts", 0)
+            signer_id_pre = manifest.get("authority_id", "")
+            now = int(time.time())
+            if manifest_ts and abs(now - manifest_ts) > 300:
+                logger.warning("Chain: stale manifest (ts=%d, now=%d, delta=%d)",
+                               manifest_ts, now, now - manifest_ts)
+                return False
+            if manifest_nonce:
+                with self._lock:
+                    if manifest_nonce in self._seen_nonces:
+                        logger.warning("Chain: duplicate nonce — possible replay attack")
+                        return False
+                    self._seen_nonces.add(manifest_nonce)
+                    if len(self._seen_nonces) > 10_000:
+                        self._seen_nonces.clear()
+
+            # Version check: reject stale manifests (version <= latest known)
+            manifest_version = manifest.get("rootstore_version", 0)
+            if manifest_version:
+                with self._lock:
+                    latest = self._manifest_ts_latest.get(signer_id_pre, 0)
+                    if manifest_version <= latest:
+                        logger.warning("Chain: stale manifest version %d <= %d for %s",
+                                       manifest_version, latest, signer_id_pre)
+                        return False
+                    self._manifest_ts_latest[signer_id_pre] = manifest_version
+
             # Find the signing authority — first try RootStore, then bootstrap
             signer_id = manifest.get("authority_id", "")
             signer_pk = None

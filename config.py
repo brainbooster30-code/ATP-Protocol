@@ -19,6 +19,7 @@ ACK_WINDOW_MS        = 200            # ack timeout
 CONNECTION_SETUP_TIMEOUT_MS = 10_000
 STREAM_CLOSE_TIMEOUT_MS     = 5_000
 GRACE_PERIOD_S              = 300
+HANDSHAKE_TIMEOUT_S         = 30                     # max handshake duration
 
 # ── Gossip (peer-to-peer revocation exchange) ─────────────────────────────────
 GOSSIP_INTERVAL_S = 5

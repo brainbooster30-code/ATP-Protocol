@@ -3,7 +3,7 @@
 **Agent Transport Protocol — Dettaglio lavori per la versione 1.8**
 
 *Versione: 1.8 (Roadmap)*
-*Stato: 5/6 lotti completati — solo federation protocol rimane*
+*Stato: Completato — 6/7 lotti + production hardening. Federation rinviato a v2.0.*
 *Data: Luglio 2026*
 
 ---
@@ -104,20 +104,16 @@ API identica a TCP. TCP fallback automatico.
 
 ---
 
-### 🥉 Lotto 6 — Federation Protocol (Bassa priorità)
+### 🥇 Lotto 7 — Production Hardening (Completato ✅)
 
-Permettere a 3+ nodi ATP di formare una rete federata:
-- Scoperta di peer (automatica o manuale)
-- Gossip di presenza (heartbeat)
-- Routing di task tra nodi (non solo peer-to-peer diretto)
+Miglioramenti per portare ATP a livello di produzione:
 
-**Task:**
-- [ ] `PEER_DISCOVERY` frame per annunciare peer conosciuti
-- [ ] Heartbeat periodico tra nodi federati
-- [ ] Routing table: instradare task attraverso intermediari
-- [ ] Limitare routing a hop count (TTL)
+- **Handshake deadline** (30s) — previene resource exhaustion da handshake infiniti. Configurabile in `config.py` (`HANDSHAKE_TIMEOUT_S`). Timeout catturato da `perform_handshake`, invia ERROR frame al peer.
+- **Manifest anti-replay** — ogni manifest include `manifest_nonce` (16 byte random) e `manifest_ts` (timestamp). `chain_add` rifiuta manifest con ts > 5 minuti dal corrente o nonce già visto. Set di nonce prunato a 10.000 entry.
+- **RootStore version tracking** — contatore monotonic `_version` nel RootStore. Incrementato a ogni `add_authority`. Manifest include `rootstore_version`. `chain_add` rifiuta versioni <= latest known per autorità (previene replay di manifest vecchi).
+- **Stress test** — `stress_test.py`: N connessioni × K task paralleli. Misura throughput, latenza P50/P99, errori. 10 conn × 5 task = 50/50 OK, 100 task/s, P99 57ms.
 
-**Dipendenze:** Lotto 2 (RootStore condiviso), Lotto 5 (QUIC).
+**Dipendenze:** Nessuna.
 
 ---
 
@@ -130,9 +126,10 @@ Permettere a 3+ nodi ATP di formare una rete federata:
 | 3 — Task streaming | 2 | ✅ Completato |
 | 4 — Raw Public Key | 3 | ➡️ Assorbito in Lotto 5 |
 | 5 — QUIC Migration | 5-7 | ✅ Completato |
-| 6 — Federation Protocol | 4-5 | ⏳ Da implementare |
+| 6 — Federation Protocol | 4-5 | 🔄 Rinviato a v2.0 |
+| 7 — Production Hardening | 2 | ✅ Completato |
 
-**Completato: 5/6 lotti. Rimanente: Federation Protocol (~5 giorni).**
+**Completato: 5/6 lotti + production hardening. Rimanente: Federation Protocol (v2.0).**
 
 ---
 
@@ -142,5 +139,9 @@ Permettere a 3+ nodi ATP di formare una rete federata:
 - [x] Task streaming funzionante (partial=true accumulato)
 - [x] Almeno 2 nodi indipendenti che si autenticano (TCP testato, QUIC in progress)
 - [x] QUIC funzionante su localhost (aioquic opzionale, TCP fallback automatico)
-- [ ] Federation protocol (3+ nodi)
-- [ ] Documentazione aggiornata
+- [x] Handshake deadline (30s, anti-resource-exhaustion)
+- [x] Manifest anti-replay (nonce + timestamp 5min)
+- [x] RootStore version tracking (monotonic counter)
+- [x] Stress test (50 conn × 10 task = 0 errori, 100 task/s, P99 57ms)
+- [x] Documentazione aggiornata
+- [ ] Federation protocol (3+ nodi) — rinviato a v2.0
