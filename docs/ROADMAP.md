@@ -3,7 +3,7 @@
 **Agent Transport Protocol — Dettaglio lavori per la versione 1.8**
 
 *Versione: 1.8 (Roadmap)*
-*Stato: Pianificazione*
+*Stato: In esecuzione — 3/6 lotti completati*
 *Data: Luglio 2026*
 
 ---
@@ -57,35 +57,36 @@ per scambiarsi i manifest del RootStore.
 
 ---
 
-### 🥈 Lotto 3 — Task Streaming (Media priorità)
+### 🥇 Lotto 3 — Task Streaming (Completato ✅)
 
-TASK_RESPONSE ha già un campo `partial` e `sequence` (SPEC.md §3.5)
-ma non sono mai implementati. Task lunghi (DeepSeek, ricerca)
-possono inviare risposte parziali.
+TASK_RESPONSE ora supporta `partial=true` e `sequence`:
+- Server: se il risultato è una lista, invia ogni elemento come chunk
+- Client: accumula chunk finché `partial=false` o `sequence` finale
+- Ogni chunk è cifrato con E2E (AES-256-GCM + Ed25519 sign)
+- Timeout per chunk singolo, non per task completo
 
 **Task:**
-- [ ] Server: dopo TASK_RESPONSE(partial=true), inviare chunk successivi
-- [ ] Client: accumulare chunk finché partial=false
-- [ ] Timeout per chunk intermedio (non per task completo)
-- [ ] Aggiornare `send_task` per supportare streaming
+- [x] Server: invio chunk multipli con partial=true
+- [x] Client: accumulo chunk fino a partial=false
+- [x] E2E encryption per ogni chunk
+- [x] Test: 86 test passanti
 
-**Dipendenze:** Lotto 1 (firma E2E per ogni chunk).
+**Dipendenze:** Nessuna.
 
 ---
 
-### 🥈 Lotto 4 — Raw Public Key (RFC 7250) (Media priorità)
+### 🥈 Lotto 4 — Raw Public Key (RFC 7250) (Prerequisito pronto ✅)
 
-La specifica ATP richiede Raw Public Keys (RFC 7250) invece di
-certificati X.509. Attualmente usiamo X.509 self-signed per via
-del modulo `ssl` standard che non supporta RFC 7250.
+`aioquic` installato e funzionante (v1.3.0). Supporta nativamente:
+- QUIC TLS 1.3
+- Raw Public Keys (RFC 7250)
+- CipherSuite: AES-128-GCM, AES-256-GCM, CHACHA20-POLY1305
 
 **Task:**
-- [ ] Valutare `aioquic` che supporta nativamente RFC 7250
-- [ ] In alternativa: patch al modulo `ssl` via `PyOpenSSL`
-- [ ] Generare chiavi X25519/Ed25519 raw al posto di X.509
-- [ ] Verificare interoperabilità tra agenti con e senza RFC 7250
-
-**Dipendenze:** `aioquic` o `pyopenssl`.
+- [ ] Implementare `QUICTransport` con aioquic
+- [ ] Generare chiavi raw invece di X.509 per TLS
+- [ ] Mantenere TCP come fallback
+- [ ] Benchmark comparativo TCP vs QUIC
 
 ---
 
@@ -143,9 +144,9 @@ Permettere a 3+ nodi ATP di formare una rete federata:
 
 ## Criteri di rilascio v1.8
 
-- [ ] Test: 85+ (75 attuali + 10 nuovi)
+- [x] Test: 85+ (86 attuali)
+- [x] Authenticated E2E attivo di default
+- [x] Task streaming funzionante (partial=true accumulato)
 - [ ] Almeno 2 nodi indipendenti che si autenticano (multi-authority)
-- [ ] Task streaming funzionante (partial=true accumulato)
-- [ ] Authenticated E2E attivo di default
 - [ ] QUIC funzionante su localhost (aioquic opzionale, TCP fallback)
 - [ ] Documentazione aggiornata

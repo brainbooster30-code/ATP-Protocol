@@ -498,19 +498,54 @@ class ATPAgent:
             return {"status": "error", "data": resp, "error_code": resp.get("error_code"), "error_message": resp.get("error_message")}
 
         if ft == 0x02:
+            # Handle streaming: accumulate chunks until partial=false
             sent_time = header["timestamp"]
-            latency = int(time.time() * 1000) - sent_time
-            result_bytes = resp.get("result_payload", b"")
+            is_partial = resp.get("partial", False)
+            chunk = resp.get("result_payload", b"")
             if self._e2e_key and self._peer_ed25519_pk:
-                decrypted = self._e2e_decrypt_verify(result_bytes, self._e2e_key, self._peer_ed25519_pk)
+                decrypted = self._e2e_decrypt_verify(chunk, self._e2e_key, self._peer_ed25519_pk)
                 if decrypted is not None:
-                    result_bytes = decrypted
+                    chunk = decrypted
                 else:
-                    logger.warning("E2E auth failed for task %s response", task_id.hex()[:8])
+                    logger.warning("E2E auth failed for task %s chunk", task_id.hex()[:8])
             elif self._e2e_key:
-                decrypted = self._e2e_decrypt(result_bytes, self._e2e_key)
+                decrypted = self._e2e_decrypt(chunk, self._e2e_key)
                 if decrypted is not None:
-                    result_bytes = decrypted
+                    chunk = decrypted
+
+            if is_partial:
+                # Not the final chunk — accumulate and wait for more
+                chunks = [chunk]
+                seq = resp.get("sequence", 1)
+                logger.debug("Streaming: received chunk %d for task %s", seq, task_id.hex()[:8])
+                while True:
+                    next_resp = await self._read_frame()
+                    if next_resp is None:
+                        break
+                    nft = next_resp.get("header", {}).get("frame_type")
+                    if nft == 0x04:
+                        chunks.append(b"")
+                        break
+                    if nft != 0x02:
+                        break
+                    n_partial = next_resp.get("partial", False)
+                    n_chunk = next_resp.get("result_payload", b"")
+                    if self._e2e_key and self._peer_ed25519_pk:
+                        nd = self._e2e_decrypt_verify(n_chunk, self._e2e_key, self._peer_ed25519_pk)
+                        if nd is not None:
+                            n_chunk = nd
+                    elif self._e2e_key:
+                        nd = self._e2e_decrypt(n_chunk, self._e2e_key)
+                        if nd is not None:
+                            n_chunk = nd
+                    chunks.append(n_chunk)
+                    if not n_partial:
+                        break
+                result_bytes = b"".join(chunks)
+            else:
+                result_bytes = chunk
+
+            latency = int(time.time() * 1000) - sent_time
             result_text = result_bytes.decode("utf-8", errors="replace")[:200]
             if self.monitor:
                 self.monitor.add_event(TASK_COMPLETE, {
@@ -1247,18 +1282,43 @@ class ATPAgent:
                     result_bytes = json.dumps(result).encode("utf-8")
 
                 resp_header = build_header(0x02, task_id_from_req)
-                if self._e2e_key and self._peer_ed25519_pk:
-                    encrypted_result = self._e2e_encrypt_signed(result_bytes, self._e2e_key, self.identity.ed25519_sk)
-                elif self._e2e_key:
-                    encrypted_result = self._e2e_encrypt(result_bytes, self._e2e_key)
+                if isinstance(result_bytes, list) and len(result_bytes) > 1:
+                    # Streaming: send each chunk as partial response
+                    for idx, chunk in enumerate(result_bytes):
+                        is_last = (idx == len(result_bytes) - 1)
+                        if self._e2e_key and self._peer_ed25519_pk:
+                            enc = self._e2e_encrypt_signed(chunk, self._e2e_key, self.identity.ed25519_sk)
+                        elif self._e2e_key:
+                            enc = self._e2e_encrypt(chunk, self._e2e_key)
+                        else:
+                            enc = chunk
+                        chunk_resp = {
+                            "header": build_header(0x02, task_id_from_req),
+                            "status": 0,
+                            "result_payload": enc,
+                            "partial": not is_last,
+                            "sequence": idx + 1,
+                        }
+                        await self._send_frame(chunk_resp)
+                        if not is_last:
+                            await asyncio.sleep(0)
+                    encrypted_result = b""
                 else:
-                    encrypted_result = result_bytes
+                    if isinstance(result_bytes, list):
+                        result_bytes = result_bytes[0] if result_bytes else b""
+                    if self._e2e_key and self._peer_ed25519_pk:
+                        encrypted_result = self._e2e_encrypt_signed(result_bytes, self._e2e_key, self.identity.ed25519_sk)
+                    elif self._e2e_key:
+                        encrypted_result = self._e2e_encrypt(result_bytes, self._e2e_key)
+                    else:
+                        encrypted_result = result_bytes
                 response = {
                     "header": resp_header,
                     "status": 0,
                     "result_payload": encrypted_result,
                 }
-                await self._send_frame(response)
+                if not (isinstance(result_bytes, list) and len(result_bytes) > 1):
+                    await self._send_frame(response)
 
                 if self.monitor:
                     self.monitor.add_event(TASK_COMPLETE, {
