@@ -1591,6 +1591,35 @@ class ATPAgent:
         self._current_task.add_done_callback(lambda t: setattr(self, '_current_task', None))
 
     # ══════════════════════════════════════════════════════════════════════
+    #  Federation helpers
+    # ══════════════════════════════════════════════════════════════════════
+
+    async def _forward_task_to_peer(self, task_frame: dict, target: str, ttl: int):
+        """Forward a task to the next hop in the federation (v2.0)."""
+        if not hasattr(self, "_fed_router") or not self._fed_router:
+            return
+        if not self._writer:
+            return
+        try:
+            live = await self._fed_router.get_live_peers()
+            target_peer = None
+            for p in live:
+                if p.peer_id == target:
+                    target_peer = p
+                    break
+            if target_peer or live:
+                fwd = {
+                    "header": build_header(0x62),
+                    "target_peer_id": target,
+                    "ttl": ttl,
+                    "task_frame": task_frame,
+                }
+                await self._send_frame(fwd)
+                logger.info("Federation: forwarded task to %s (ttl=%d)", target[:16], ttl)
+        except Exception as exc:
+            logger.debug("Federation: forward failed — %s", exc)
+
+    # ══════════════════════════════════════════════════════════════════════
     #  I/O helpers
     # ══════════════════════════════════════════════════════════════════════
 
