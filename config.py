@@ -62,7 +62,7 @@ def get_deepseek_api_key() -> str:
 # ── Event ring-buffer ─────────────────────────────────────────────────────────
 MONITOR_EVENT_LIMIT = 1000
 
-# ── Rate Limiter / Anti-Replay ─────────────────────────────────────────────────
+# ── Rate Limiter / Anti-Replay / Handshake Limiter ──────────────────────────────
 import asyncio, time, collections
 
 class RateLimiter:
@@ -101,8 +101,33 @@ class AntiReplay:
             if frame_id in self._seen:
                 return False
             if len(self._seen) >= self._max_ids:
-                # evict oldest
                 oldest = min(self._seen, key=self._seen.get)
                 del self._seen[oldest]
             self._seen[frame_id] = now_ms
             return True
+
+class HandshakeRateLimiter:
+    """Rate limiter per IP per handshake attempts.
+    
+    Prevents handshake flood DoS. Default: 10 handshake attempts per 60s per IP.
+    """
+    def __init__(self, max_attempts: int = 10, window_s: int = 60):
+        self.max_attempts = max_attempts
+        self.window_s = window_s
+        self._lock = asyncio.Lock()
+        self._attempts: dict[str, list[float]] = {}
+
+    async def allow(self, peer_ip: str) -> bool:
+        async with self._lock:
+            now = time.time()
+            window = self._attempts.setdefault(peer_ip, [])
+            # Remove expired entries
+            window[:] = [t for t in window if t > now - self.window_s]
+            if len(window) >= self.max_attempts:
+                return False
+            window.append(now)
+            return True
+
+    def reset(self, peer_ip: str):
+        """Reset counter for an IP (called after successful handshake)."""
+        self._attempts.pop(peer_ip, None)

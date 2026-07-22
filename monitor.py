@@ -256,3 +256,41 @@ class Monitor:
     def get_tasks(self, limit: int = 100) -> list[dict]:
         with self._lock:
             return list(self._tasks)[-limit:]
+
+    # ── Metrics export ───────────────────────────────────────────────────
+
+    def get_metrics_text(self) -> str:
+        """Return plain-text metrics suitable for CLI/healthcheck."""
+        m = self.get_metrics()
+        lines = [
+            f"tasks_sent {m['tasks_sent']}",
+            f"tasks_received {m['tasks_received']}",
+            f"tasks_completed {m['tasks_completed']}",
+            f"tasks_failed {m['tasks_failed']}",
+            f"avg_latency_ms {m['avg_latency_ms']}",
+            f"active_connections {m['active_connections']}",
+            f"total_connections {m['total_connections']}",
+            f"rate_limit_hits {m['rate_limit_hits']}",
+        ]
+        return "\n".join(lines) + "\n"
+
+    def get_metrics_prometheus(self) -> str:
+        """Return Prometheus-format metrics."""
+        m = self.get_metrics()
+        return (
+            f"# HELP atp_tasks_sent Total tasks sent\n"
+            f"# TYPE atp_tasks_sent counter\n"
+            f"atp_tasks_sent {m['tasks_sent']}\n"
+            f"# HELP atp_tasks_completed Total tasks completed\n"
+            f"# TYPE atp_tasks_completed counter\n"
+            f"atp_tasks_completed {m['tasks_completed']}\n"
+            f"# HELP atp_tasks_failed Total tasks failed\n"
+            f"# TYPE atp_tasks_failed counter\n"
+            f"atp_tasks_failed {m['tasks_failed']}\n"
+            f"# HELP atp_avg_latency_ms Average task latency\n"
+            f"# TYPE atp_avg_latency_ms gauge\n"
+            f"atp_avg_latency_ms {m['avg_latency_ms']}\n"
+            f"# HELP atp_active_connections Active connections\n"
+            f"# TYPE atp_active_connections gauge\n"
+            f"atp_active_connections {m['active_connections']}\n"
+        )

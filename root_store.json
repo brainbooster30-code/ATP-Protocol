@@ -2,24 +2,24 @@
   "version": 1,
   "authorities": {
     "atp-mock-ca": {
-      "pk_hex": "41c71e0d348cd0a853f0d81316b97ac8d68d88e0303da3bf5720f4b788b2935c",
-      "added": 1784719970,
-      "expires": 1816255970
+      "pk_hex": "5977c9e1e955c759696367db374b29c28f231cc0ef667c633f9cbd45e59c8a8a",
+      "added": 1784722169,
+      "expires": 1816258169
     },
     "ca-1": {
       "pk_hex": "0000000000000000000000000000000000000000000000000000000000000000",
-      "added": 1784719970,
-      "expires": 1784723570
+      "added": 1784722169,
+      "expires": 1784725769
     },
     "chain-ca": {
-      "pk_hex": "d359f33fe4f566a689fcec63789fa3071cbe4b22184efbf6039cce91de6899ab",
-      "added": 1784719970,
-      "expires": 1816255970
+      "pk_hex": "fc584aafdfed2edda3db1b593c8f14018e37a458114a67eec0515934c24c823d",
+      "added": 1784722169,
+      "expires": 1816258169
     },
     "child-ca": {
       "pk_hex": "0000000000000000000000000000000000000000000000000000000000000000",
-      "added": 1784719970,
-      "expires": 1816255970
+      "added": 1784722169,
+      "expires": 1816258169
     }
   },
   "chain": [

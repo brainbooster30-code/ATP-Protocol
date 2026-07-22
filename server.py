@@ -94,8 +94,18 @@ class ATPServer:
 
     async def _on_connect(self, reader: asyncio.StreamReader,
                           writer: asyncio.StreamWriter):
-        """Handle one incoming connection."""
-        from config import RateLimiter, AntiReplay
+        """Handle one incoming connection with handshake rate limiting."""
+        from config import RateLimiter, AntiReplay, HandshakeRateLimiter
+
+        # Global handshake rate limiter (per IP)
+        peer_ip, peer_port = writer.get_extra_info("peername", ("0.0.0.0", 0))[:2]
+        if not hasattr(ATPServer, "_hs_limiter"):
+            ATPServer._hs_limiter = HandshakeRateLimiter()
+        if not await ATPServer._hs_limiter.allow(str(peer_ip)):
+            logger.warning("Handshake rate limit exceeded for %s", peer_ip)
+            writer.close()
+            return
+
         rate_limiter = RateLimiter()
         anti_replay = AntiReplay()
 
@@ -110,6 +120,8 @@ class ATPServer:
         try:
             ok = await agent.perform_handshake(reader, writer)
             if ok:
+                if hasattr(ATPServer, "_hs_limiter"):
+                    ATPServer._hs_limiter.reset(str(peer_ip))
                 await agent.handle_task_loop()
         except Exception as exc:
             logger.exception("Connection handler error")

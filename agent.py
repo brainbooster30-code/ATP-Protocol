@@ -404,15 +404,23 @@ class ATPAgent:
         payload: bytes,
         deadline_ms: int = 30_000,
         priority: int = 4,
-    ) -> Optional[dict]:
+    ) -> dict:
         """Send a TASK_REQUEST and wait for the TASK_RESPONSE.
-        
+
+        Returns dict with keys:
+          - status: "ok" | "timeout" | "error" | "disconnected"
+          - data: response dict (for ok/error)
+          - error_code: int (for error)
+          - error_message: str (for error)
+
         Supports multiple concurrent in-flight tasks (multiplexing per task_id).
         Starts a background frame reader if not already running.
         """
+        result: dict = {"status": "disconnected", "data": None}
+
         if not self.bound or not self._writer:
             logger.error("send_task: not bound")
-            return None
+            return result
 
         if self.monitor:
             self.monitor.add_event(TASK_START, {
@@ -452,19 +460,20 @@ class ATPAgent:
             logger.warning("send_task: timeout waiting for response (task %s)", task_id.hex()[:8])
             async with self._pending_lock:
                 self._pending_responses.pop(task_id, None)
+            result = {"status": "timeout", "data": None, "error_code": 0x0B, "error_message": "Task timeout"}
             if self.monitor:
                 self.monitor.add_event(TASK_ERROR, {
                     "conn_id": self._conn_id,
                     "error_code": 0x0B,
                     "error_message": "Task timeout",
                 })
-            return None
+            return result
         finally:
             async with self._pending_lock:
                 self._pending_responses.pop(task_id, None)
 
         if resp is None:
-            return None
+            return {"status": "disconnected", "data": None, "error_code": None, "error_message": "Peer closed connection"}
 
         ft = resp.get("header", {}).get("frame_type")
         if ft == 0x04:
@@ -486,7 +495,7 @@ class ATPAgent:
                     "direction": "sent",
                     "timestamp": time.time(),
                 })
-            return resp
+            return {"status": "error", "data": resp, "error_code": resp.get("error_code"), "error_message": resp.get("error_message")}
 
         if ft == 0x02:
             sent_time = header["timestamp"]
@@ -521,10 +530,10 @@ class ATPAgent:
                     "direction": "sent",
                     "timestamp": time.time(),
                 })
-            return resp
+            return {"status": "ok", "data": resp, "error_code": None, "error_message": None, "result_bytes": result_bytes}
 
         logger.warning("send_task: unexpected frame 0x%02x", ft)
-        return None
+        return {"status": "error", "data": None, "error_code": None, "error_message": f"Unexpected frame type 0x{ft:02x}"}
 
     async def handle_task_loop(self):
         """Server loop: read incoming frames and dispatch tasks."""
@@ -1317,12 +1326,10 @@ class ATPAgent:
                     })
 
         self._current_task = asyncio.create_task(_process())
-        try:
-            await self._current_task
-        except asyncio.CancelledError:
-            pass  # already handled inside _process()
-        finally:
-            self._current_task = None
+        # Fire-and-forget: non awaitare, così il reader loop processa
+        # altri frame mentre il task gira in background.
+        # La risposta TASK_RESPONSE viene inviata dal task stesso.
+        self._current_task.add_done_callback(lambda t: setattr(self, '_current_task', None))
 
     # ══════════════════════════════════════════════════════════════════════
     #  I/O helpers
