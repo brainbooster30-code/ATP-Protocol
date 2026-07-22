@@ -133,6 +133,9 @@ class ATPServer:
         if task_type == "deepseek_chat":
             prompt = task_payload.decode("utf-8", errors="replace")
             result = await ATPAgent.call_deepseek(prompt, self.monitor)
-            return {"result": result or "no response"}
+            if result:
+                return {"result": result}
+            else:
+                return {"error": "DeepSeek returned no result"}
         else:
             return {"echo": task_payload.decode("utf-8", errors="replace")}

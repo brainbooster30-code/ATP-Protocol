@@ -707,11 +707,13 @@ class ATPAgent:
     @staticmethod
     async def call_deepseek(prompt: str, monitor: Optional[Monitor] = None,
                             conn_id: str = "") -> Optional[str]:
-        """Call the DeepSeek chat API with *prompt*."""
-        # Check for placeholder / missing API key early
+        """Call the DeepSeek chat API with *prompt*.
+        
+        Returns None if the API key is not configured or the call fails.
+        """
         api_key = get_deepseek_api_key()
         if not api_key:
-            logger.warning("DeepSeek API key missing — returning mock response")
+            logger.error("DeepSeek API key missing — cannot call API")
             if monitor:
                 monitor.add_event(DEEPSEEK_CALL_START, {
                     "conn_id": conn_id,
@@ -719,12 +721,10 @@ class ATPAgent:
                 })
                 monitor.add_event(DEEPSEEK_CALL_END, {
                     "conn_id": conn_id,
-                    "success": True,
+                    "success": False,
+                    "error": "API key not configured",
                 })
-            return (
-                f"[ATP v1.7 Mock Response] Richiesta ricevuta: \"{prompt[:100]}{'...' if len(prompt) > 100 else ''}\". "
-                f"Configura DEEPSEEK_API_KEY per risposte reali da DeepSeek."
-            )
+            return None
 
         if monitor:
             monitor.add_event(DEEPSEEK_CALL_START, {
@@ -1088,7 +1088,10 @@ class ATPAgent:
                 elif task_type == "deepseek_chat":
                     prompt = task_payload.decode("utf-8", errors="replace")
                     result_text = await self.call_deepseek(prompt, self.monitor, self._conn_id)
-                    result = {"result": result_text or "no response"} if result_text else {"error": "DeepSeek returned no result"}
+                    if result_text:
+                        result = {"result": result_text}
+                    else:
+                        result = {"error": "DeepSeek returned no result"}
                     result_bytes = json.dumps(result).encode("utf-8")
 
                 resp_header = build_header(0x02, task_id_from_req)

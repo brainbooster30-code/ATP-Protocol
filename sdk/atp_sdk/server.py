@@ -256,7 +256,10 @@ class SimpleATPServer:
                 payload_str,
                 monitor=self.monitor,
             )
-            return json.dumps({"result": result or "no response"})
+            if result:
+                return json.dumps({"result": result})
+            else:
+                return json.dumps({"error": "DeepSeek returned no result"})
 
         elif task_type == "echo":
             return json.dumps({"echo": payload_str})

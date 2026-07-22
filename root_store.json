@@ -2,14 +2,14 @@
   "version": 1,
   "authorities": {
     "atp-mock-ca": {
-      "pk_hex": "ca1111c9508d3bc7428fc6f9b596a9b050d24941d246e8ae7480c34428d2bc90",
-      "added": 1784718098,
-      "expires": 1816254098
+      "pk_hex": "f8872c682bed12a8e7c58685efd4892007e6a81cbcdbddf8d46d7e499b97bf97",
+      "added": 1784719139,
+      "expires": 1816255139
     },
     "ca-1": {
       "pk_hex": "0000000000000000000000000000000000000000000000000000000000000000",
-      "added": 1784718098,
-      "expires": 1784721698
+      "added": 1784719139,
+      "expires": 1784722739
     }
   },
   "chain": []
