@@ -253,6 +253,7 @@ MCC_BIND_REQUEST (0x40):
     "header": Header,
     "mcc_cbor": bstr,              # MCC.cbor()
     "nonce": bstr .size 16,        # CSPRNG nonce
+    "eph_pk": bstr .size 32,       # X25519 ephemeral key (ECDHE forward secrecy)
     "authority_pk": bstr .size 32,  # opzionale, richiesto solo per TOFU esplicito
 }
 ```
@@ -263,7 +264,8 @@ MCC_BIND_RESPONSE (0x41):
     "header": Header,
     "mcc_cbor": bstr,
     "nonce": bstr .size 16,
-    "signature": bstr .size 64,    # Ed25519_sign(sk, peer_nonce || "atp-bind-response")
+    "eph_pk": bstr .size 32,       # X25519 ephemeral key (ECDHE forward secrecy)
+    "signature": bstr .size 64,    # Ed25519_sign(sk, peer_nonce || self.eph_pk || "atp-bind-response")
     "authority_pk": bstr .size 32,  # opzionale, richiesto solo per TOFU esplicito
 }
 ```
@@ -272,7 +274,7 @@ MCC_BIND_CONFIRM (0x42):
 ```
 {
     "header": Header,
-    "signature": bstr .size 64,    # Ed25519_sign(sk, peer_nonce || "atp-bind-confirm")
+    "signature": bstr .size 64,    # Ed25519_sign(sk, peer_nonce || self.eph_pk || "atp-bind-confirm")
 }
 ```
 
@@ -349,27 +351,51 @@ Responder → Initiator: VERSION_ACK {selected_version: "1.8", ...}
 I parametri negoziati includono: max_batch_bytes, clock_skew_ms,
 anti_replay_ttl_ms, rate_limit_rps.
 
-### 5.3 Fase 3: MCC Exchange & Identity Binding
+### 5.3 Fase 3: MCC Exchange & Identity Binding + ECDHE
 
 ```
 Initiator → Responder: MCC_BIND_REQUEST {mcc: MCC_i, nonce: nonce_i,
-  authority_pk: authority_pk_i?}
-Responder verifica MCC_i (8 step)
+  eph_pk: eph_pk_i, authority_pk: authority_pk_i?}
+Responder genera coppia X25519 effimera (eph_sk_r, eph_pk_r)
+Responder verifica MCC_i (8 step) + TLS-ATP binding
 Responder → Initiator: MCC_BIND_RESPONSE {mcc: MCC_r, nonce: nonce_r,
-  signature: Ed25519_sign(sk_r, nonce_i + "atp-bind-response"),
+  eph_pk: eph_pk_r,
+  signature: Ed25519_sign(sk_r, nonce_i + eph_pk_r + "atp-bind-response"),
   authority_pk: authority_pk_r?}
-Initiator verifica MCC_r (8 step)
-Initiator verifica signature su nonce_i
+Initiator verifica MCC_r (8 step) + TLS-ATP binding
+Initiator verifica signature su nonce_i || eph_pk_r
 Initiator → Responder: MCC_BIND_CONFIRM {
-  signature: Ed25519_sign(sk_i, nonce_r + "atp-bind-confirm")}
-Responder verifica signature su nonce_r
+  signature: Ed25519_sign(sk_i, nonce_r + eph_pk_i + "atp-bind-confirm")}
+Responder verifica signature su nonce_r || eph_pk_i
 ```
 
 **Proof-of-possession strings:**
 ```
-"atp-bind-response"  → firmato da Responder
-"atp-bind-confirm"   → firmato da Initiator
+"atp-bind-response"  → firmato da Responder (include eph_pk_r nel messaggio)
+"atp-bind-confirm"   → firmato da Initiator (include eph_pk_i nel messaggio)
 ```
+
+Ogni firma include la chiave effimera X25519 del firmatario (`eph_pk`),
+prevenendo MITM sullo scambio ECDHE. La derivazione della chiave di
+sessione usa ECDH(effimero) invece di ECDH(statico):
+
+```
+# ECDHE (forward secrecy) — preferito
+shared_secret = X25519(eph_sk, peer_eph_pk)
+kdf_input = "atp-v1.8-ecdhe" ++ shared_secret ++ sorted(eph_pk, peer_eph_pk)
+session_key = BLAKE3(kdf_input)
+
+# Fallback ECDH statico (backward compat, senza forward secrecy)
+shared_secret = X25519(static_sk, peer_static_pk)
+kdf_input = "atp-v1.8-ecdh" ++ shared_secret ++ sorted(static_pk, peer_static_pk)
+session_key = BLAKE3(kdf_input)
+```
+
+Le due stringhe KDF sono diverse (`"atp-v1.8-ecdhe"` vs `"atp-v1.8-ecdh"`),
+quindi non c'è collisione possibile tra sessioni ECDHE e sessioni static ECDH.
+Dopo la chiusura della connessione, le chiavi effimere vengono eliminate — la
+compromissione futura delle chiavi statiche non permette di decrittare
+sessioni passate registrate.
 
 ### 5.4 Fase 4: Capability Exchange
 
@@ -403,10 +429,16 @@ coppia di chiavi per scopi diversi).
 
 ### 7.1 Cuckoo Filter
 
-- 1024 bucket, 4 slot per bucket, 16-bit fingerprint
+- Bucket count: 1024 (auto-resize dinamico: raddoppia fino a 8192)
+- 4 slot per bucket, 16-bit fingerprint
 - False positive rate: ~2.3 × 10⁻³¹
+- Capacità massima: ~31.000 elementi (dopo resize automatici)
 - Operazioni: insert, contains, remove
-- Thread-safe con locking
+- Thread-safe con RLock
+- Auto-resize: quando il filtro è pieno (>500 tentativi di eviction),
+  i bucket vengono raddoppiati e tutti gli elementi re-inseriti con
+  il nuovo conteggio bucket. Le chiavi originali sono conservate
+  per garantire re-hashing corretto.
 
 ### 7.2 Root Store
 
@@ -428,9 +460,16 @@ coppia di chiavi per scopi diversi).
 - Fanout: 3 peer
 - Intervallo: 5 secondi
 - Trasporto: TCP semplice, payload CBOR (lista di hex serial)
+- Firma: Ed25519 (v2) con autenticazione esterna opzionale tramite
+  `trust_gossip_peer()` o `load_trusted_peers()` da file JSON
+  (`~/.atp/gossip_trust.json`). Se il peer è nella trusted list,
+  la firma viene verificata contro la chiave pinnata invece che
+  contro la `sender_pk` auto-annunciata.
 - Ricevente: GossipServer su porta 8444, inserisce seriali nel CuckooFilter
 - Frame ATP: CONTROL_REVOKE_NOTIFY (0x11) per revoca su connessione esistente
 - Gestito da `_dispatch_frame` in entrambi lati (server e client)
+- Backward compat: gossip v1 (lista piatta) e v2 unsigned sono accettati
+  durante la migrazione
 
 ---
 
@@ -459,12 +498,21 @@ coppia di chiavi per scopi diversi).
 
 ### 9.1 Threat model
 
-- **Attaccante passivo**: non può decifrare il traffico (TLS 1.3)
+- **Attaccante passivo**: non può decifrare il traffico (TLS 1.3 + E2E AES-256-GCM)
 - **Attaccante attivo (MITM)**: non può falsificare un MCC senza la chiave
-  privata dell'autorità
-- **Attaccante con chiave compromessa**: può essere revocato via CuckooFilter,
-  la revoca si propaga via gossip
-- **Replay attack**: prevenuto da nonce challenge e anti-replay TTL (20s)
+  privata dell'autorità; non può alterare lo scambio ECDHE perché `eph_pk`
+  è incluso nella firma Ed25519 di proof-of-possession
+- **Attaccante con chiave statica X25519 compromessa**: non può decrittare
+  sessioni passate (forward secrecy via ECDHE); le chiavi effimere sono
+  eliminate dopo ogni connessione
+- **Attaccante con chiave Ed25519 compromessa**: può firmare falsi MCC ma
+  non può decrittare il traffico E2E; può essere revocato via CuckooFilter,
+  la revoca si propaga via gossip + ATP inline
+- **Attaccante con certificato TLS diverso dall'MCC**: rilevato dal
+  TLS-ATP binding che confronta la chiave pubblica del certificato TLS
+  con `agent_sign_pk` nell'MCC
+- **Replay attack**: prevenuto da nonce challenge (Phase 3), anti-replay
+  TTL (20s), e nonce + timestamp nei manifest del RootStore
 
 ### 9.2 Limitazioni note
 
@@ -511,22 +559,36 @@ Risultati tipici: 100 task/s, P50 24ms, P99 57ms, 0% errori.
 ### 9.3 E2E Payload Encryption
 
 Oltre a TLS 1.3, ATP supporta crittografia end-to-end dei payload
-task. Dopo il handshake, se entrambi i peer hanno chiavi X25519
-nell'MCC, viene derivata una chiave AES-256-GCM simmetrica.
+task. Dopo il handshake, viene derivata una chiave AES-256-GCM
+simmetrica.
 
-**ECDH Key Agreement:**
+**ECDHE Key Agreement (forward secrecy) — preferito:**
 
-1. Ogni agente genera una coppia X25519 (pubblica + privata)
-2. La chiave pubblica è pubblicata nell'MCC come `agent_pk`
-3. Dopo handshake, ogni lato calcola:
+1. Ogni connessione genera una coppia X25519 effimera (`eph_sk`, `eph_pk`)
+2. Le chiavi effimere sono scambiate durante Phase 3 (`MCC_BIND_REQUEST`/`RESPONSE`)
+3. La firma Ed25519 di proof-of-possession include `eph_pk`, prevenendo MITM
+4. Dopo handshake, ogni lato calcola:
    ```
-   shared_secret = X25519(own_sk, peer_pk)
-   kdf_input = "atp-v1.8-ecdh" ++ shared_secret ++ sorted(local_pk, remote_pk)
+   shared_secret = X25519(eph_sk, peer_eph_pk)
+   kdf_input = "atp-v1.8-ecdhe" ++ shared_secret ++ sorted(eph_pk, peer_eph_pk)
    session_key = BLAKE3(kdf_input)   # 32 byte, AES-256 key
    ```
-4. Le chiavi pubbliche sono ordinate (sorted) per garantire KDF
-   identico su entrambi i lati
-5. `session_key` è un AES-256-GCM key
+5. Alla chiusura della connessione, le chiavi effimere vengono eliminate
+6. La compromissione futura delle chiavi statiche **non** permette di decrittare
+   sessioni passate
+
+**ECDH statico (fallback backward compat):**
+
+Se il peer non supporta ECDHE (nessun `eph_pk` nel bind frame), si usa
+ECDH statico dalle chiavi X25519 nell'MCC:
+
+```
+shared_secret = X25519(own_sk, peer_pk)
+kdf_input = "atp-v1.8-ecdh" ++ shared_secret ++ sorted(local_pk, remote_pk)
+session_key = BLAKE3(kdf_input)   # 32 byte, AES-256 key
+```
+
+Le due stringhe KDF sono diverse per evitare collisioni.
 
 **Authenticated Encryption (encrypt-then-sign):**
 

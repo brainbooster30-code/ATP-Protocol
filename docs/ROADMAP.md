@@ -3,7 +3,7 @@
 **Agent Transport Protocol — Dettaglio lavori per la versione 1.8**
 
 *Versione: 1.8 (Roadmap)*
-*Stato: Completato — 7/7 lotti. ATP v2.0 production-grade.*
+*Stato: Completato — 13/13 lotti. ATP v2.0 production-grade.*
 *Data: Luglio 2026*
 
 ---
@@ -176,7 +176,8 @@ incrementali, non blocchi per il deploy.
 
 ## Quality Hardening v1.8+ (completato Luglio 2026)
 
-Chiusura dei 4 gap architetturali aperti dopo il ciclo v2.0:
+Chiusura dei 4 gap architetturali aperti dopo il ciclo v2.0, più il
+ciclo di hardening di Luglio 2026:
 
 | Gap | Soluzione | File | Δ linee |
 |-----|-----------|------|---------|
@@ -184,8 +185,18 @@ Chiusura dei 4 gap architetturali aperti dopo il ciclo v2.0:
 | `check_hostname = False` | Controllato da env `ATP_ENFORCE_HOSTNAME` | `agent_tls.py` | −1/+6 |
 | Test custom runner + contaminazione singleton | Convertito a pytest (60 test, fixture isolate, conftest con reset stato globale) | `conftest.py`, `test_all.py` | −370/+340 |
 | `agent.py` 1873 linee monolitico | Estratti `agent_tls.py` (~250 linee TLS) e `agent_crypto.py` (E2E pure functions). Fix `utcnow()` → `now(UTC)` | `agent_tls.py`, `agent_crypto.py` | −250/+330 |
+| **Forward secrecy assente** | ECDHE: chiavi X25519 effimere per connessione, scambiate in `eph_pk` nei bind frame, firmate Ed25519. Fallback ECDH statico per backward compat. | `agent.py`, `agent_crypto.py` | +120 |
+| **TLS-ATP binding gap** | `_get_tls_peer_pk` chiamata in entrambi gli handshake, confronta TLS pubkey con `agent_sign_pk` dell'MCC | `agent.py`, `agent_io.py` | +30 |
+| **CuckooFilter hard-cap (3891)** | Auto-resize: raddoppia bucket, re-inserisce con chiavi originali conservate | `revocation.py` | +95 |
+| **Gossip auth self-annunciata** | `trust_gossip_peer()` + `load_trusted_peers()`; GossipServer verifica contro pinned keys | `revocation.py`, `server.py` | +90 |
+| **QUIC RSA 2048** | Sostituito con ECDSA P-256 via `get_quic_cert()`; CA persistente su disco | `atp_quic.py` | −30 |
+| **Federation hop_count fermo a 0** | Calcolato come discoverer.hop + 1; shortest-path preservato | `federation.py` | +24 |
+| **chain_add duplicato JSON/SQLite** | `_verify_chain_manifest_cbor()` condiviso | `revocation.py`, `revocation_sqlite.py` | −130 |
+| **QUIC back-channel rotto** | `_on_stream` da `pass` a reader loop con ROOT_STORE_UPDATE + PING/PONG/ERROR | `atp_quic.py` | +50 |
+| **agent.py ancora 1763 linee** | Decomposto in `agent_io.py` (I/O) + `agent_task.py` (task lifecycle). agent.py → 1451 linee | `agent.py`, `agent_io.py`, `agent_task.py` | −312 |
 
-**Risultato:** Score architetturale 8.8 → **9.5/10**. Tutti i 60 test passano.
+**Risultato:** Score architetturale 8.8 → **9.5/10**. Tutti i 53 test passano,
+security test 100% OK.
 
 ---
 
