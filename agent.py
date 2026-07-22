@@ -309,6 +309,7 @@ class ATPAgent:
         self._keepalive_interval: float = 30.0
         self._current_task: Optional[asyncio.Task] = None
         self._e2e_key: Optional[bytes] = None
+        self._peer_ed25519_pk: Optional[bytes] = None
 
 
         # Register agent identity in monitor
@@ -424,7 +425,9 @@ class ATPAgent:
         req_frame = {
             "header": header,
             "task_type": task_type,
-            "task_payload": self._e2e_encrypt(payload, self._e2e_key) if self._e2e_key else payload,
+            "task_payload": self._e2e_encrypt_signed(payload, self._e2e_key, self.identity.ed25519_sk)
+                          if self._e2e_key and self._peer_ed25519_pk else
+                          self._e2e_encrypt(payload, self._e2e_key) if self._e2e_key else payload,
             "deadline_ms": deadline_ms,
             "metadata": {"priority": priority},
             "priority_hint": priority,
@@ -489,12 +492,16 @@ class ATPAgent:
             sent_time = header["timestamp"]
             latency = int(time.time() * 1000) - sent_time
             result_bytes = resp.get("result_payload", b"")
-            if self._e2e_key:
-                decrypted = self._e2e_decrypt(result_bytes, self._e2e_key)
+            if self._e2e_key and self._peer_ed25519_pk:
+                decrypted = self._e2e_decrypt_verify(result_bytes, self._e2e_key, self._peer_ed25519_pk)
                 if decrypted is not None:
                     result_bytes = decrypted
                 else:
-                    logger.warning("E2E decrypt failed for task %s response", task_id.hex()[:8])
+                    logger.warning("E2E auth failed for task %s response", task_id.hex()[:8])
+            elif self._e2e_key:
+                decrypted = self._e2e_decrypt(result_bytes, self._e2e_key)
+                if decrypted is not None:
+                    result_bytes = decrypted
             result_text = result_bytes.decode("utf-8", errors="replace")[:200]
             if self.monitor:
                 self.monitor.add_event(TASK_COMPLETE, {
@@ -619,6 +626,21 @@ class ATPAgent:
                         "conn_id": self._conn_id,
                         "serials_count": count,
                     })
+            elif ft == 0x21:
+                """ROOT_STORE_UPDATE — receive a signed root store manifest from peer."""
+                signed_manifest = frame.get("signed_manifest", b"")
+                if signed_manifest:
+                    from revocation import get_root_store
+                    rs = get_root_store()
+                    if rs.chain_add(signed_manifest):
+                        logger.info("RootStore updated via ROOT_STORE_UPDATE")
+                        if self.monitor:
+                            self.monitor.add_event("ROOT_STORE_UPDATE", {
+                                "conn_id": self._conn_id,
+                                "status": "accepted",
+                            })
+                    else:
+                        logger.warning("RootStore update rejected (bad signature)")
             elif ft == 0x12:
                 logger.info("Received SHUTDOWN_ACK — closing cleanly")
             elif ft == 0x15:
@@ -644,6 +666,14 @@ class ATPAgent:
                     pass
             elif ft == 0x16:
                 self._last_peer_activity = time.time()
+            elif ft == 0x21:
+                """ROOT_STORE_UPDATE received on client side."""
+                signed_manifest = frame.get("signed_manifest", b"")
+                if signed_manifest:
+                    from revocation import get_root_store
+                    rs = get_root_store()
+                    if rs.chain_add(signed_manifest):
+                        logger.info("Client RootStore updated via ROOT_STORE_UPDATE")
             elif ft == 0x20:
                 logger.warning("Received ERROR frame: %s", frame.get("error_message"))
 
@@ -755,13 +785,42 @@ class ATPAgent:
             logger.warning("E2E decryption failed (bad key/tampered data)")
             return None
 
+    def _e2e_encrypt_signed(self, plaintext: bytes, session_key: bytes,
+                             ed25519_sk: bytes) -> bytes:
+        """Encrypt-then-sign: AES-GCM + Ed25519 signature.
+
+        Returns: nonce(12) || ciphertext+tag(28) || signature(64)
+        Total: 104 bytes overhead.
+        Verify with _e2e_decrypt_verify().
+        """
+        encrypted = self._e2e_encrypt(plaintext, session_key)
+        sig = ed25519_sign(ed25519_sk, encrypted)
+        return encrypted + sig
+
+    def _e2e_decrypt_verify(self, encrypted_signed: bytes, session_key: bytes,
+                             ed25519_pk: bytes) -> Optional[bytes]:
+        """Verify-then-decrypt: check Ed25519 sig, then AES-GCM decrypt.
+
+        Returns plaintext or None (tampered/invalid).
+        """
+        if len(encrypted_signed) < 12 + 16 + 64:
+            return None
+        encrypted = encrypted_signed[:-64]
+        sig = encrypted_signed[-64:]
+        if not ed25519_verify(ed25519_pk, sig, encrypted):
+            logger.warning("E2E auth failed: Ed25519 signature mismatch")
+            return None
+        return self._e2e_decrypt(encrypted, session_key)
+
     def _setup_e2e(self):
         """Derive E2E session key from peer's X25519 public key in MCC.
+        Also stores peer's Ed25519 pk for authenticated E2E.
 
         Called after handshake. Stores session key in self._e2e_key.
         No-op if peer key is missing (backward compat, plaintext fallback).
         """
         self._e2e_key: Optional[bytes] = None
+        self._peer_ed25519_pk: Optional[bytes] = None
         if self.peer_mcc is None:
             return
         for leaf in self.peer_mcc.leaves:
@@ -770,7 +829,8 @@ class ATPAgent:
                 if pk:
                     self._e2e_key = pk
                     logger.info("E2E ECDH session key derived (%s...)", pk.hex()[:8])
-                break
+            elif leaf.key == "agent_sign_pk":
+                self._peer_ed25519_pk = leaf.value
 
     @staticmethod
     async def call_deepseek(prompt: str, monitor: Optional[Monitor] = None,
@@ -1148,12 +1208,16 @@ class ATPAgent:
             try:
                 # Decrypt incoming payload if E2E key is established
                 actual_payload = task_payload
-                if self._e2e_key:
-                    decrypted = self._e2e_decrypt(task_payload, self._e2e_key)
+                if self._e2e_key and self._peer_ed25519_pk:
+                    decrypted = self._e2e_decrypt_verify(task_payload, self._e2e_key, self._peer_ed25519_pk)
                     if decrypted is not None:
                         actual_payload = decrypted
                     else:
-                        logger.warning("E2E decrypt failed for incoming task")
+                        logger.warning("E2E auth failed for incoming task")
+                elif self._e2e_key:
+                    decrypted = self._e2e_decrypt(task_payload, self._e2e_key)
+                    if decrypted is not None:
+                        actual_payload = decrypted
 
                 result_bytes = actual_payload  # default echo
                 if self.task_handler:
@@ -1174,7 +1238,12 @@ class ATPAgent:
                     result_bytes = json.dumps(result).encode("utf-8")
 
                 resp_header = build_header(0x02, task_id_from_req)
-                encrypted_result = self._e2e_encrypt(result_bytes, self._e2e_key) if self._e2e_key else result_bytes
+                if self._e2e_key and self._peer_ed25519_pk:
+                    encrypted_result = self._e2e_encrypt_signed(result_bytes, self._e2e_key, self.identity.ed25519_sk)
+                elif self._e2e_key:
+                    encrypted_result = self._e2e_encrypt(result_bytes, self._e2e_key)
+                else:
+                    encrypted_result = result_bytes
                 response = {
                     "header": resp_header,
                     "status": 0,
