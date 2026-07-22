@@ -272,9 +272,6 @@ svg text{font-family:'JetBrains Mono',monospace}
   <h1>Agent Transport <span>Protocol</span></h1>
   <p class="sub">ATP è un protocollo che permette a due agenti software di identificarsi, verificarsi e collaborare in modo sicuro — senza server centrale, senza intermediari, senza configurazione di rete.</p>
   <div class="hero-stats">
-    <div class="hero-stat"><div class="num">86</div><div class="lbl">Test</div></div>
-    <div class="hero-stat"><div class="num">4.800</div><div class="lbl">Linee di codice</div></div>
-    <div class="hero-stat"><div class="num">4</div><div class="lbl">Dipendenze</div></div>
     <div class="hero-stat"><div class="num">5</div><div class="lbl">Layer protocollo</div></div>
     <div class="hero-stat"><div class="num">7</div><div class="lbl">Bug trovati e fixati</div></div>
   </div>
@@ -448,10 +445,6 @@ Due agenti software autonomi — su due macchine diverse, forse su due continent
 │ Rate limiting nativo  │  <span class="off">❌</span>    │  <span class="off">❌</span>    │   <span class="off">❌</span>    │  <span class="off">❌</span>    │  <span class="on">✅</span> 100  │
 │ Handshake cifrato     │  <span class="on">✅</span>    │  <span class="on">✅</span>    │   <span class="on">✅</span>    │  <span class="on">✅</span>    │  <span class="on">✅</span> 5 fasi│
 │ QUIC support          │  <span class="off">❌</span>    │  <span class="off">❌</span>    │   <span class="off">❌</span>    │  <span class="off">❌</span>    │  <span class="on">✅</span> RFC  │
-│ Open source (MIT)     │  <span class="on">✅</span>    │  <span class="on">✅</span>    │   <span class="on">✅</span>    │  <span class="on">✅</span>    │  <span class="on">✅</span>      │
-│ Dipendenze minime     │  <span class="off">❌</span> ∞  │  <span class="off">❌</span> ∞  │   <span class="off">❌</span> ∞  │  <span class="off">❌</span> ∞  │  <span class="on">✅</span> 4(5) │
-├───────────────────────┼─────────┼─────────┼──────────┼─────────┼──────────────┤
-│ <span class="hl">TOTALE ✅</span>            │  <span class="hl">3/14</span>  │  <span class="hl">4/14</span>  │   <span class="hl">4/14</span>  │  <span class="hl">4/14</span>  │  <span class="atp-col">14/14</span>    │
 └───────────────────────┴─────────┴─────────┴──────────┴─────────┴──────────────┘
 </pre>
 </div>
@@ -467,7 +460,7 @@ Due agenti software autonomi — su due macchine diverse, forse su due continent
 <li><strong>IoT con vincoli estremi di memoria</strong> — MQTT o CoAP sono più leggeri.</li>
 <li><strong>Single-node / monolite</strong> — Chiamate dirette bastano.</li>
 </ul>
-<p style="margin-top:10px;font-style:italic">La regola pratica: <strong>se hai bisogno che due agenti si identifichino, si verifichino e collaborino su internet senza un server centrale, ATP è la scelta giusta.</strong> Altrimenti, usa lo strumento più semplice che funziona.</p>
+<p style="margin-top:10px;font-style:italic">La regola pratica: <strong>se hai bisogno che due agenti si identifichino, si verifichino e collaborino su internet senza un server centrale, ATP è la scelta giusta.</strong></p>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -801,7 +794,7 @@ teacher_client.py   → carica card, verifica MCC
   <rect x="590" y="824" width="12" height="12" rx="3" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.5"/>
   <text x="608" y="834" fill="#94a3b8" font-size="8">Rate limiting</text>
 
-  <text x="62" y="856" fill="#475569" font-size="8">Tutti i frame sono CBOR canonico + BLAKE3 + Ed25519 firmati. 86 test. 5 moduli. 4 dipendenze. Zero fallback/mock.</text>
+  <text x="62" y="856" fill="#475569" font-size="8">Tutti i frame sono CBOR canonico + BLAKE3 + Ed25519 firmati.</text>
 
 </svg>
 </div>
@@ -811,11 +804,7 @@ teacher_client.py   → carica card, verifica MCC
   <p>
     <strong style="color:#22d3ee">ATP</strong> Agent Transport Protocol · v1.8
     <span class="sep">·</span>
-    <a href="https://github.com/brainbooster30-code/ATP-Protocol">GitHub</a>
-    <span class="sep">·</span>
-    MIT License · Python 3.12+
-    <br>
-    86 test · 4 dipendenze · 10 moduli · Progettato per agenti autonomi
+    Protocollo crittografico peer-to-peer per agenti autonomi
   </p>
 </div>
 
