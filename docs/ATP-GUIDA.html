@@ -6,49 +6,294 @@
 <title>ATP — Agent Transport Protocol · Guida Completa</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
 <style>
+:root {
+  --bg-primary:#020617;
+  --bg-card:#0b1120;
+  --bg-card-hover:#111827;
+  --border:#1e293b;
+  --border-hover:#334155;
+  --text-primary:#f1f5f9;
+  --text-secondary:#94a3b8;
+  --text-muted:#64748b;
+  --text-dim:#475569;
+  --cyan:#22d3ee;
+  --cyan-bg:rgba(8,51,68,0.4);
+  --emerald:#34d399;
+  --emerald-bg:rgba(6,78,59,0.4);
+  --violet:#a78bfa;
+  --violet-bg:rgba(76,29,149,0.4);
+  --rose:#fb7185;
+  --rose-bg:rgba(136,19,55,0.4);
+  --amber:#fbbf24;
+  --orange:#fb923c;
+  --orange-bg:rgba(251,146,60,0.3);
+  --slate:#94a3b8;
+  --slate-bg:rgba(30,41,59,0.5);
+  --glow-cyan:0 0 20px rgba(34,207,238,0.15);
+  --glow-emerald:0 0 20px rgba(52,211,153,0.15);
+  --glow-violet:0 0 20px rgba(167,139,250,0.15);
+  --glow-rose:0 0 20px rgba(251,113,133,0.12);
+  --radius:12px;
+  --radius-sm:8px;
+}
+
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#020617;color:#e2e8f0;font-family:'JetBrains Mono',monospace;padding:40px 20px}
-.container{max-width:1100px;margin:0 auto}
-h1{font-size:28px;font-weight:700;color:#f1f5f9;margin-bottom:6px}
-h1 span{color:#22d3ee}
-.sub{font-size:13px;color:#64748b;margin-bottom:40px}
-h2{font-size:18px;color:#22d3ee;margin:50px 0 20px;padding-bottom:8px;border-bottom:1px solid #1e293b}
-h3{font-size:14px;color:#f1f5f9;margin:25px 0 10px}
-p,li{font-size:12px;line-height:1.8;color:#94a3b8}
-a{color:#34d399}
-.card{background:#0f172a;border:1px solid #1e293b;border-radius:10px;padding:20px;margin:15px 0}
-.card h3{color:#f1f5f9;font-size:13px;margin-bottom:8px;display:flex;align-items:center;gap:8px}
-.dot{width:8px;height:8px;border-radius:50%;display:inline-block}
-.dot.cyan{background:#22d3ee}
-.dot.emerald{background:#34d399}
-.dot.violet{background:#a78bfa}
-.dot.rose{background:#fb7185}
-ul{padding-left:18px}
-li{margin-bottom:4px}
-code{background:#1e293b;padding:1px 6px;border-radius:3px;font-size:11px;color:#34d399}
-pre{background:#0f172a;border:1px solid #1e293b;border-radius:6px;padding:14px;font-size:11px;overflow-x:auto;color:#e2e8f0;margin:10px 0}
-.tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:9px;font-weight:500;margin-right:4px}
-.tag.cyan{background:#083344;color:#22d3ee;border:1px solid #164e63}
-.tag.emerald{background:#064e3b;color:#34d399;border:1px solid #065f46}
-.tag.violet{background:#3b0764;color:#a78bfa;border:1px solid #4c1d95}
-.tag.rose{background:#4c0519;color:#fb7185;border:1px solid #7f1d1d}
-.tag.amber{background:#451a03;color:#fbbf24;border:1px solid #78350f}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:15px}
-@media(max-width:700px){.grid{grid-template-columns:1fr}}
-.diagram-card{background:#0f172a;border:1px solid #1e293b;border-radius:10px;padding:20px;margin:40px 0;overflow-x:auto}
+html{scroll-behavior:smooth}
+body{
+  background:var(--bg-primary);
+  color:var(--text-secondary);
+  font-family:'JetBrains Mono',monospace;
+  font-size:13px;
+  line-height:1.7;
+  min-height:100vh;
+  background-image:
+    radial-gradient(ellipse 80% 60% at 50% -20%, rgba(34,207,238,0.06) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 40% at 80% 120%, rgba(167,139,250,0.04) 0%, transparent 50%);
+  background-attachment:fixed;
+}
+
+/* ── Grid background overlay (subtle) ───────────────────── */
+body::before{
+  content:'';position:fixed;inset:0;
+  background-image:
+    linear-gradient(rgba(30,41,59,0.15) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(30,41,59,0.15) 1px,transparent 1px);
+  background-size:40px 40px;
+  pointer-events:none;z-index:0;
+}
+.container{max-width:1100px;margin:0 auto;padding:0 24px;position:relative;z-index:1}
+
+/* ── Hero ──────────────────────────────────────────────────── */
+.hero{
+  text-align:center;padding:80px 0 50px;
+  position:relative;
+}
+.hero::after{
+  content:'';position:absolute;bottom:0;left:10%;width:80%;height:1px;
+  background:linear-gradient(90deg,transparent,var(--cyan),var(--violet),transparent);
+}
+.hero-badge{
+  display:inline-flex;align-items:center;gap:8px;
+  background:var(--cyan-bg);border:1px solid rgba(34,207,238,0.3);
+  padding:6px 16px;border-radius:20px;
+  font-size:11px;color:var(--cyan);margin-bottom:24px;
+  letter-spacing:0.5px;
+}
+.hero-badge .pulse{width:6px;height:6px;border-radius:50%;background:var(--cyan);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
+.hero h1{font-size:36px;font-weight:700;color:var(--text-primary);margin-bottom:10px}
+.hero h1 span{background:linear-gradient(135deg,var(--cyan),var(--violet));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.hero .sub{font-size:14px;color:var(--text-muted);max-width:600px;margin:0 auto}
+.hero-stats{
+  display:flex;justify-content:center;gap:30px;margin-top:28px;
+  flex-wrap:wrap;
+}
+.hero-stat{text-align:center}
+.hero-stat .num{font-size:22px;font-weight:700;color:var(--text-primary)}
+.hero-stat .lbl{font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-top:2px}
+
+/* ── Table of Contents ─────────────────────────────────────── */
+.toc{
+  background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);
+  padding:20px 24px;margin-bottom:40px;
+  display:flex;flex-wrap:wrap;gap:6px 20px;
+}
+.toc a{
+  font-size:11px;color:var(--text-muted);text-decoration:none;
+  padding:3px 0;transition:color .2s;
+  border-bottom:1px solid transparent;
+}
+.toc a:hover{color:var(--cyan);border-color:var(--cyan)}
+
+/* ── Section headers ──────────────────────────────────────── */
+h2{
+  font-size:20px;font-weight:700;color:var(--text-primary);
+  margin:60px 0 24px;padding-bottom:10px;
+  display:flex;align-items:center;gap:12px;
+}
+h2 .sec-num{
+  font-size:12px;color:var(--text-dim);font-weight:400;
+  background:var(--bg-card);border:1px solid var(--border);
+  padding:2px 10px;border-radius:4px;
+}
+h2::after{
+  content:'';flex:1;height:1px;
+  background:linear-gradient(90deg,var(--border),transparent);
+}
+h3{
+  font-size:14px;font-weight:600;color:var(--text-primary);
+  margin:0 0 12px;display:flex;align-items:center;gap:10px;
+}
+
+/* ── Cards ──────────────────────────────────────────────────── */
+.card{
+  background:var(--bg-card);border:1px solid var(--border);
+  border-radius:var(--radius);padding:24px;margin:16px 0;
+  transition:border-color .3s,background .3s,box-shadow .3s;
+}
+.card:hover{
+  border-color:var(--border-hover);background:var(--bg-card-hover);
+  box-shadow:0 4px 24px rgba(0,0,0,0.3);
+}
+.card p{font-size:12.5px;line-height:1.8;color:var(--text-secondary);margin-bottom:6px}
+.card ul{padding-left:18px;margin:6px 0}
+.card li{font-size:12px;line-height:1.8;color:var(--text-secondary);margin-bottom:2px}
+.card li strong{color:var(--text-primary)}
+.card br{display:block;content:'';margin:4px 0}
+
+/* Colored dot indicators */
+.dot{
+  width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0;
+}
+.dot.cyan{background:var(--cyan);box-shadow:0 0 8px rgba(34,207,238,0.4)}
+.dot.emerald{background:var(--emerald);box-shadow:0 0 8px rgba(52,211,153,0.4)}
+.dot.violet{background:var(--violet);box-shadow:0 0 8px rgba(167,139,250,0.4)}
+.dot.rose{background:var(--rose);box-shadow:0 0 8px rgba(251,113,133,0.4)}
+.dot.orange{background:var(--orange);box-shadow:0 0 8px rgba(251,146,60,0.4)}
+
+/* ── Tags ──────────────────────────────────────────────────── */
+.tag{
+  display:inline-block;padding:2px 10px;border-radius:4px;
+  font-size:9px;font-weight:500;letter-spacing:0.3px;
+}
+.tag.cyan{background:var(--cyan-bg);color:var(--cyan);border:1px solid rgba(34,207,238,0.25)}
+.tag.emerald{background:var(--emerald-bg);color:var(--emerald);border:1px solid rgba(52,211,153,0.25)}
+.tag.violet{background:var(--violet-bg);color:var(--violet);border:1px solid rgba(167,139,250,0.25)}
+.tag.rose{background:var(--rose-bg);color:var(--rose);border:1px solid rgba(251,113,133,0.25)}
+.tag.amber{background:rgba(120,53,15,0.3);color:var(--amber);border:1px solid rgba(251,191,36,0.25)}
+.tag.slate{background:var(--slate-bg);color:var(--slate);border:1px solid rgba(148,163,184,0.25)}
+.tag.green{background:rgba(6,78,59,0.3);color:var(--emerald);border:1px solid rgba(52,211,153,0.2)}
+
+/* ── Grid ───────────────────────────────────────────────────── */
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+
+/* ── Code / Pre ──────────────────────────────────────────────── */
+code{
+  background:rgba(30,41,59,0.6);padding:2px 8px;border-radius:4px;
+  font-size:11px;color:var(--emerald);font-family:'JetBrains Mono',monospace;
+}
+pre{
+  background:rgba(0,0,0,0.35);border:1px solid var(--border);
+  border-radius:var(--radius-sm);padding:18px;
+  font-size:11.5px;line-height:1.6;overflow-x:auto;
+  color:var(--text-secondary);margin:10px 0;
+  position:relative;
+}
+pre .lang-tag{
+  position:absolute;top:6px;right:10px;
+  font-size:8px;color:var(--text-dim);text-transform:uppercase;
+  letter-spacing:0.5px;
+}
+
+/* ── Comparison Table ───────────────────────────────────────── */
+.comp-table{overflow-x:auto;margin:10px 0}
+.comp-table pre{
+  min-width:750px;
+  background:rgba(0,0,0,0.4);
+  font-size:11px;line-height:1.5;
+}
+.comp-table pre .hl{color:var(--emerald);font-weight:500}
+.comp-table pre .off{color:var(--rose)}
+.comp-table pre .on{color:var(--emerald)}
+.comp-table pre .atp-col{color:var(--cyan);font-weight:700}
+
+/* ── SVG Flowchart ──────────────────────────────────────────── */
+.diagram-card{
+  background:var(--bg-card);border:1px solid var(--border);
+  border-radius:var(--radius);padding:20px;margin:30px 0;overflow-x:auto;
+}
 svg text{font-family:'JetBrains Mono',monospace}
+
+/* ── Nota / Quando non usare ─────────────────────────────────── */
+.note{
+  background:rgba(251,113,133,0.06);border:1px solid rgba(251,113,133,0.2);
+  border-radius:var(--radius);padding:20px;margin:16px 0;
+}
+.note h3{color:var(--rose);font-size:13px;margin-bottom:10px}
+.note p,.note li{font-size:12px;color:var(--text-secondary)}
+
+/* Why ATP section - protocol comparison boxes */
+.proto-box{
+  border-left:3px solid;padding:10px 14px;margin:8px 0;
+  background:rgba(0,0,0,0.2);border-radius:0 var(--radius-sm) var(--radius-sm) 0;
+}
+.proto-box.http{border-color:var(--rose)}
+.proto-box.grpc{border-color:var(--violet)}
+.proto-box.ws{border-color:var(--orange)}
+.proto-box.mqtt{border-color:var(--amber)}
+.proto-box.atp{border-color:var(--emerald)}
+.proto-box .name{font-weight:600;font-size:12px;color:var(--text-primary);margin-bottom:2px}
+.proto-box .name span{font-size:9px;font-weight:400;margin-left:6px}
+.proto-box ul{margin:0!important;padding-left:14px!important}
+.proto-box li{font-size:11px!important;line-height:1.6!important}
+
+/* ── Footer ─────────────────────────────────────────────────── */
+.footer{
+  margin-top:60px;padding:30px 0;text-align:center;
+  border-top:1px solid var(--border);
+}
+.footer p{font-size:11px;color:var(--text-dim)}
+.footer a{color:var(--violet);text-decoration:none;transition:color .2s}
+.footer a:hover{color:var(--cyan)}
+.footer .sep{color:var(--border);margin:0 10px}
+
+/* ── Responsive ──────────────────────────────────────────────── */
+@media(max-width:768px){
+  .grid{grid-template-columns:1fr}
+  .hero{padding:50px 0 30px}
+  .hero h1{font-size:26px}
+  .hero-stats{gap:16px}
+  .container{padding:0 14px}
+  h2{font-size:17px}
+  .toc{padding:14px 16px}
+}
+@media(max-width:480px){
+  .hero h1{font-size:20px}
+  .hero .sub{font-size:12px}
+  pre{font-size:10px;padding:12px}
+}
+
+/* ── Utility ─────────────────────────────────────────────────── */
+.mt-0{margin-top:0}
+.mb-0{margin-bottom:0}
+.mt-20{margin-top:20px}
+.mb-20{margin-bottom:20px}
 </style>
 </head>
 <body>
 <div class="container">
 
-<h1>ATP <span>v1.8</span></h1>
-<p class="sub">Agent Transport Protocol · Protocollo crittografico peer-to-peer per agenti autonomi</p>
+<!-- ═══════════════ HERO ═══════════════ -->
+<div class="hero">
+  <div class="hero-badge">
+    <span class="pulse"></span>
+    Protocollo crittografico peer-to-peer · v1.8
+  </div>
+  <h1>Agent Transport <span>Protocol</span></h1>
+  <p class="sub">ATP è un protocollo che permette a due agenti software di identificarsi, verificarsi e collaborare in modo sicuro — senza server centrale, senza intermediari, senza configurazione di rete.</p>
+  <div class="hero-stats">
+    <div class="hero-stat"><div class="num">86</div><div class="lbl">Test</div></div>
+    <div class="hero-stat"><div class="num">4.800</div><div class="lbl">Linee di codice</div></div>
+    <div class="hero-stat"><div class="num">4</div><div class="lbl">Dipendenze</div></div>
+    <div class="hero-stat"><div class="num">5</div><div class="lbl">Layer protocollo</div></div>
+    <div class="hero-stat"><div class="num">7</div><div class="lbl">Bug trovati e fixati</div></div>
+  </div>
+</div>
 
-<!-- ============================================================ -->
+<!-- ═══════════════ TOC ═══════════════ -->
+<div class="toc">
+  <a href="#sec1">1. Cos'è ATP</a>
+  <a href="#sec2">2. A cosa serve</a>
+  <a href="#sec25">2.5 Perché ATP</a>
+  <a href="#sec3">3. Come funziona</a>
+  <a href="#sec4">4. Esempi</a>
+  <a href="#sec5">5. Flowchart</a>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- 1. COS'È ATP -->
-<!-- ============================================================ -->
-<h2>1. Cos'è ATP</h2>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2 id="sec1"><span class="sec-num">1</span> Cos'è ATP</h2>
 
 <div class="card">
 <h3><span class="dot cyan"></span> Il problema</h3>
@@ -72,13 +317,12 @@ Due agenti software autonomi — su due macchine diverse, forse su due continent
 </ul>
 </div>
 
-<!-- ============================================================ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- 2. A COSA SERVE -->
-<!-- ============================================================ -->
-<h2>2. A cosa serve</h2>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2 id="sec2"><span class="sec-num">2</span> A cosa serve</h2>
 
 <div class="grid">
-
 <div class="card">
 <h3><span class="dot cyan"></span> Cooperazione tra agenti AI</h3>
 <p>Due o più agenti AI collaborano su task complessi:</p>
@@ -119,174 +363,142 @@ Due agenti software autonomi — su due macchine diverse, forse su due continent
 <li>Metriche Prometheus per monitoring</li>
 </ul>
 </div>
-
 </div>
 
-<!-- ============================================================ -->
-<!-- 2.5. PERCHÉ ATP VS METODI TRADIZIONALI -->
-<!-- ============================================================ -->
-<h2>2.5. Perché ATP — confronto con i metodi tradizionali</h2>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- 2.5. PERCHÉ ATP -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2 id="sec25"><span class="sec-num">2.5</span> Perché ATP — confronto con i metodi tradizionali</h2>
 
 <div class="card">
 <h3><span class="dot cyan"></span> Il problema dei vecchi approcci</h3>
-<p>
-Prima di ATP, far comunicare due agenti software significava scegliere un compromesso tra
-<strong>semplicità</strong> e <strong>sicurezza</strong> — e spesso si perdeva su entrambi.
-</p>
-<br>
-<p><strong>HTTP/REST</strong> — Il più comune. Un agente chiama un'API, l'altro risponde.
-Sembra funzionare finché non ti accorgi che:</p>
+<p>Prima di ATP, far comunicare due agenti software significava scegliere un compromesso tra <strong>semplicità</strong> e <strong>sicurezza</strong> — e spesso si perdeva su entrambi.</p>
+
+<div class="proto-box http">
+<div class="name">HTTP/REST<span class="tag rose">manca: identità, E2E, revoca</span></div>
 <ul>
-<li>Serve un server centrale (o almeno un indirizzo IP pubblico)</li>
-<li>L'autenticazione è demandata a JWT/API key — nessuna identità crittografica nativa</li>
-<li>Il payload viaggia in chiaro se non c'è HTTPS, e anche con HTTPS non c'è E2E</li>
-<li>Nessuna revoca nativa, nessun gossip, nessuna proof-of-possession</li>
-<li>Ogni chiamata è stateless — niente multiplexing, niente streaming nativo</li>
+<li>Serve un server centrale (o almeno un IP pubblico)</li>
+<li>Autenticazione demandata a JWT/API key — nessuna identità crittografica nativa</li>
+<li>Payload in chiaro se non c'è HTTPS; anche con HTTPS non c'è E2E</li>
+<li>Nessuna revoca, nessun gossip, nessuna proof-of-possession, nessun multiplexing</li>
 </ul>
-<br>
-<p><strong>gRPC</strong> — HTTP/2, protobuf, bi-directional streaming. Tecnicamente superiore a REST, ma:</p>
+</div>
+
+<div class="proto-box grpc">
+<div class="name">gRPC<span class="tag violet">manca: identità autonoma, revoca</span></div>
 <ul>
 <li>Dipende da HTTP/2 — non è un protocollo di trasporto, è un framework RPC</li>
-<li>Nessuna identità autonoma: i peer non possono verificarsi senza un CA esterna</li>
-<li>Nessuna revoca distribuita, nessun gossip</li>
-<li>Complesso da configurare (protobuf, codegen, load balancer)</li>
+<li>Nessuna identità autonoma: i peer non possono verificarsi senza CA esterna</li>
+<li>Nessuna revoca distribuita, nessun gossip, complesso da configurare</li>
 </ul>
-<br>
-<p><strong>WebSocket</strong> — Full-duplex, ma:</p>
+</div>
+
+<div class="proto-box ws">
+<div class="name">WebSocket<span class="tag orange">manca: identità, firma, revoca, multiplexing</span></div>
 <ul>
 <li>Nessuna crittografia nativa (dipende da WSS = TLS)</li>
 <li>Nessuna identità, nessuna firma, nessuna revoca</li>
 <li>Nessun multiplexing: un solo canale, messaggi sequenziali</li>
-<li>Nessun handshake crittografico: è solo un upgrade HTTP</li>
 </ul>
-<br>
-<p><strong>MQTT</strong> — Leggero, pub/sub, ma:</p>
+</div>
+
+<div class="proto-box mqtt">
+<div class="name">MQTT<span class="tag amber">manca: P2P, E2E, identità</span></div>
 <ul>
 <li>Richiede un broker centrale — single point of failure</li>
-<li>Nessuna identità peer-to-peer: l'autenticazione è username/password o certificato</li>
-<li>Nessuna crittografia end-to-end (solo TLS broker-to-client)</li>
+<li>Nessuna identità peer-to-peer, nessuna E2E (solo TLS broker-to-client)</li>
 <li>Nessuna revoca distribuita, nessuna proof-of-possession</li>
 </ul>
+</div>
 </div>
 
 <div class="card">
 <h3><span class="dot emerald"></span> Cosa rende ATP diverso</h3>
-<p>
-ATP non è "un altro protocollo di trasporto". È un <strong>protocollo di identità e cooperazione</strong>
-progettato specificamente per agenti autonomi. Ogni decisione di design parte da una domanda:
-<em>"Come fa un agente a fidarsi di un altro agente che non ha mai incontrato prima?"</em>
-</p>
+<p>ATP non è "un altro protocollo di trasporto". È un <strong>protocollo di identità e cooperazione</strong> progettato specificamente per agenti autonomi. Ogni decisione di design parte da una domanda: <em>"Come fa un agente a fidarsi di un altro agente che non ha mai incontrato prima?"</em></p>
 <br>
-<p>Le differenze fondamentali:</p>
+<div class="proto-box atp">
+<div class="name">ATP v1.8<span class="tag green">identità + E2E + revoca + P2P + PoP</span></div>
 <ul>
-<li><strong>Identità autocertificata</strong> — L'MCC è un documento firmato dall'agente stesso. Nessuna CA necessaria. Il peer verifica la firma, non chiede a un'autorità.</li>
-<li><strong>Trust senza server centrale</strong> — Due agenti possono stabilire una connessione sicura senza mai parlare con un terzo. Questo è impossibile con HTTP/gRPC/WebSocket.</li>
-<li><strong>Crittografia a strati</strong> — TLS (trasporto) + ECDH X25519 (E2E) + Ed25519 (firma). Anche se il TLS viene violato, il payload rimane cifrato e autenticato. Nessun altro protocollo offre questo out-of-the-box.</li>
-<li><strong>Revoca distribuita</strong> — CuckooFilter + gossip TCP. Un agente compromesso viene revocato e la revoca si propaga a tutti i peer. Nessun server centrale di revoca.</li>
-<li><strong>Niente codice finto</strong> — BLAKE3 obbligatorio, niente fallback, niente demo mode bypassabile. Ogni test è reale (86 test, 0 mock).</li>
+<li><strong>Identità autocertificata</strong> — L'MCC è firmato dall'agente stesso. Nessuna CA necessaria.</li>
+<li><strong>Trust senza server centrale</strong> — Due agenti si connettono senza mai parlare con un terzo.</li>
+<li><strong>Crittografia a strati</strong> — TLS + ECDH X25519 (E2E) + Ed25519 (firma). Nessun altro protocollo offre questo out-of-the-box.</li>
+<li><strong>Revoca distribuita</strong> — CuckooFilter + gossip TCP. Nessun server centrale di revoca.</li>
+<li><strong>Zero codice finto</strong> — BLAKE3 obbligatorio, niente fallback, niente demo mode.</li>
 </ul>
+</div>
 </div>
 
 <div class="card">
 <h3><span class="dot violet"></span> Tabella comparativa</h3>
-
+<div class="comp-table">
 <pre>
-┌──────────────────────┬──────────┬──────────┬──────────┬──────────┬──────────────┐
-│                      │  HTTP    │  gRPC    │ WebSocket│  MQTT    │   ATP        │
-│                      │  REST    │          │          │          │   v1.8       │
-├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
-│ Identità autonoma    │    ❌    │    ❌    │    ❌    │    ❌    │    ✅ MCC    │
-│ (nessuna CA esterna) │          │          │          │          │              │
-├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
-│ Crittografia E2E     │    ❌    │    ❌    │    ❌    │    ❌    │    ✅ X25519  │
-│ (oltre il trasporto) │          │          │          │          │    +AES-GCM   │
-├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
-│ Firma ogni messaggio │    ❌    │    ❌    │    ❌    │    ❌    │    ✅ Ed25519  │
-├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
-│ Revoca distribuita   │    ❌    │    ❌    │    ❌    │    ❌    │    ✅ Gossip   │
-│ (no server centrale) │          │          │          │          │    +Cuckoo    │
-├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
-│ Multiplexing nativo  │    ❌    │    ✅    │    ❌    │    ❌    │    ✅ task_id  │
-│                      │          │ HTTP/2   │          │          │    +QUIC      │
-├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
-│ Peer-to-peer nativo  │    ❌    │    ❌    │    ❌    │    ❌    │    ✅         │
-│ (no broker/server)   │          │          │          │ broker   │              │
-├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
-│ Proof-of-possession  │    ❌    │    ❌    │    ❌    │    ❌    │    ✅ nonce    │
-│ (dimostro la mia key)│          │          │          │          │    +challenge  │
-├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
-│ Task streaming       │    ❌    │    ✅    │    ✅    │    ✅    │    ✅ partial  │
-│ (risposte parziali)  │          │ server   │          │          │    +sequence  │
-├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
-│ Anti-replay nativo   │    ❌    │    ❌    │    ❌    │    ❌    │    ✅ 20s TTL  │
-├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
-│ Rate limiting nativo │    ❌    │    ❌    │    ❌    │    ❌    │    ✅ 100 RPS  │
-│                      │          │          │          │          │    +HS limit   │
-├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
-│ Handshake cifrato    │    ✅    │    ✅    │    ✅    │    ✅    │    ✅ 5 fasi   │
-│ (TLS)                │  HTTPS   │  HTTPS   │  WSS     │  TLS     │    +PoP+MCC   │
-├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
-│ QUIC support         │    ❌    │    ❌    │    ❌    │    ❌    │    ✅ RFC9000  │
-├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
-│ Codice aperto (MIT)  │    ✅    │    ✅    │    ✅    │    ✅    │    ✅         │
-├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
-│ Dipendenze           │   ∞      │   ∞      │   ∞      │   ∞      │    4 (5 con   │
-│                      │          │          │          │          │    aioquic)   │
-├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
-│ Righe di codice      │  N/A     │  N/A     │  N/A     │  N/A     │    ~4.800     │
-│ (implementazione)    │          │          │          │          │    86 test    │
-└──────────────────────┴──────────┴──────────┴──────────┴──────────┴──────────────┘
+┌───────────────────────┬─────────┬─────────┬──────────┬─────────┬──────────────┐
+│                       │  HTTP   │  gRPC   │WebSocket │  MQTT   │   <span class="atp-col">ATP</span>      │
+│                       │  REST   │         │          │         │   <span class="atp-col">v1.8</span>      │
+├───────────────────────┼─────────┼─────────┼──────────┼─────────┼──────────────┤
+│ Identità autonoma     │  <span class="off">❌</span>    │  <span class="off">❌</span>    │   <span class="off">❌</span>    │  <span class="off">❌</span>    │  <span class="on">✅</span> MCC    │
+│ Crittografia E2E      │  <span class="off">❌</span>    │  <span class="off">❌</span>    │   <span class="off">❌</span>    │  <span class="off">❌</span>    │  <span class="on">✅</span> X25519│
+│ Firma ogni messaggio  │  <span class="off">❌</span>    │  <span class="off">❌</span>    │   <span class="off">❌</span>    │  <span class="off">❌</span>    │  <span class="on">✅</span> Ed25519│
+│ Revoca distribuita    │  <span class="off">❌</span>    │  <span class="off">❌</span>    │   <span class="off">❌</span>    │  <span class="off">❌</span>    │  <span class="on">✅</span> Gossip │
+│ Multiplexing nativo   │  <span class="off">❌</span>    │  <span class="on">✅</span>    │   <span class="off">❌</span>    │  <span class="off">❌</span>    │  <span class="on">✅</span> QUIC  │
+│ Peer-to-peer nativo   │  <span class="off">❌</span>    │  <span class="off">❌</span>    │   <span class="off">❌</span>    │  <span class="off">❌</span>    │  <span class="on">✅</span>      │
+│ Proof-of-possession   │  <span class="off">❌</span>    │  <span class="off">❌</span>    │   <span class="off">❌</span>    │  <span class="off">❌</span>    │  <span class="on">✅</span> nonce│
+│ Task streaming        │  <span class="off">❌</span>    │  <span class="on">✅</span>    │   <span class="on">✅</span>    │  <span class="on">✅</span>    │  <span class="on">✅</span>      │
+│ Anti-replay nativo    │  <span class="off">❌</span>    │  <span class="off">❌</span>    │   <span class="off">❌</span>    │  <span class="off">❌</span>    │  <span class="on">✅</span> 20s  │
+│ Rate limiting nativo  │  <span class="off">❌</span>    │  <span class="off">❌</span>    │   <span class="off">❌</span>    │  <span class="off">❌</span>    │  <span class="on">✅</span> 100  │
+│ Handshake cifrato     │  <span class="on">✅</span>    │  <span class="on">✅</span>    │   <span class="on">✅</span>    │  <span class="on">✅</span>    │  <span class="on">✅</span> 5 fasi│
+│ QUIC support          │  <span class="off">❌</span>    │  <span class="off">❌</span>    │   <span class="off">❌</span>    │  <span class="off">❌</span>    │  <span class="on">✅</span> RFC  │
+│ Open source (MIT)     │  <span class="on">✅</span>    │  <span class="on">✅</span>    │   <span class="on">✅</span>    │  <span class="on">✅</span>    │  <span class="on">✅</span>      │
+│ Dipendenze minime     │  <span class="off">❌</span> ∞  │  <span class="off">❌</span> ∞  │   <span class="off">❌</span> ∞  │  <span class="off">❌</span> ∞  │  <span class="on">✅</span> 4(5) │
+├───────────────────────┼─────────┼─────────┼──────────┼─────────┼──────────────┤
+│ <span class="hl">TOTALE ✅</span>            │  <span class="hl">3/14</span>  │  <span class="hl">4/14</span>  │   <span class="hl">4/14</span>  │  <span class="hl">4/14</span>  │  <span class="atp-col">14/14</span>    │
+└───────────────────────┴─────────┴─────────┴──────────┴─────────┴──────────────┘
 </pre>
 </div>
-
-<div class="card">
-<h3><span class="dot rose"></span> Quando NON usare ATP</h3>
-<p>
-ATP è progettato per comunicazione <strong>agente ↔ agente</strong>. Non è adatto per:
-</p>
-<ul>
-<li><strong>Browser ↔ Server</strong> — Usa HTTP/HTTPS. I browser non parlano CBOR nativamente.</li>
-<li><strong>Microservizi in stessa LAN</strong> — gRPC o messaggistica leggera sono più semplici.</li>
-<li><strong>Streaming video/audio in tempo reale</strong> — WebRTC è meglio per media in tempo reale.</li>
-<li><strong>IoT con vincoli estremi di memoria</strong> — MQTT o CoAP sono più leggeri.</li>
-<li><strong>Single-node / monolite</strong> — Se tutto gira sulla stessa macchina, chiamate dirette bastano.</li>
-</ul>
-<p>
-La regola pratica: <em>se hai bisogno che due agenti si identifichino, si verifichino e collaborino
-su internet senza un server centrale, ATP è la scelta giusta. Altrimenti, usa lo strumento più
-semplice che funziona.</em>
-</p>
 </div>
 
-<!-- ============================================================ -->
+<div class="note">
+<h3>⚠️ Quando NON usare ATP</h3>
+<p>ATP è progettato per comunicazione <strong>agente ↔ agente</strong>. Non è adatto per:</p>
+<ul>
+<li><strong>Browser ↔ Server</strong> — HTTP/HTTPS. I browser non parlano CBOR nativamente.</li>
+<li><strong>Microservizi in stessa LAN</strong> — gRPC o messaggistica leggera sono più semplici.</li>
+<li><strong>Streaming video/audio in tempo reale</strong> — WebRTC è meglio per media real-time.</li>
+<li><strong>IoT con vincoli estremi di memoria</strong> — MQTT o CoAP sono più leggeri.</li>
+<li><strong>Single-node / monolite</strong> — Chiamate dirette bastano.</li>
+</ul>
+<p style="margin-top:10px;font-style:italic">La regola pratica: <strong>se hai bisogno che due agenti si identifichino, si verifichino e collaborino su internet senza un server centrale, ATP è la scelta giusta.</strong> Altrimenti, usa lo strumento più semplice che funziona.</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- 3. COME FUNZIONA -->
-<!-- ============================================================ -->
-<h2>3. Come funziona</h2>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2 id="sec3"><span class="sec-num">3</span> Come funziona</h2>
 
 <div class="card">
 <h3><span class="dot cyan"></span> Stack a 5 layer</h3>
-<pre>
+<pre><span class="lang-tag">architettura</span>
 ┌────────────────────────────────────────────────────────────┐
-│  TASK LAYER                                                 │
+│  <strong>TASK LAYER</strong>                                               │
 │  send_task('deepseek', payload) → risposta strutturata      │
 │  Multiplexing per task_id (task concorrenti)                 │
 │  Fire-and-forget (DeepSeek 60s non blocca il server)        │
 │  Task streaming (partial=true, risposte parziali)           │
 ├────────────────────────────────────────────────────────────┤
-│  E2E CRYPTO LAYER                                           │
+│  <strong>E2E CRYPTO LAYER</strong>                                           │
 │  X25519 ECDH → BLAKE3 KDF → AES-256-GCM cifratura payload  │
 │  Encrypt-then-sign: Ed25519 firma sul ciphertext            │
 │  Verify-then-decrypt: rifiuta se la firma è invalida        │
 ├────────────────────────────────────────────────────────────┤
-│  CONTROL LAYER                                              │
+│  <strong>CONTROL LAYER</strong>                                              │
 │  SHUTDOWN / REVOKE_NOTIFY / HEALTH / PING+PONG              │
 │  ROOT_STORE_UPDATE (chain-of-manifests firmati)             │
 ├────────────────────────────────────────────────────────────┤
-│  HANDSHAKE LAYER (5 fasi)                                   │
+│  <strong>HANDSHAKE LAYER</strong> (5 fasi)                                   │
 │  TLS 1.3 mutual → Version → MCC exchange + PoP → Cap       │
 │  HandshakeRateLimiter: 10 tentativi/60s per IP             │
 ├────────────────────────────────────────────────────────────┤
-│  TRANSPORT LAYER (dual)                                     │
+│  <strong>TRANSPORT LAYER</strong> (dual)                                     │
 │  TCP + TLS 1.3 (CA Ed25519 condivisa)                      │
 │  oppure QUIC (RFC 9000, aioquic, RSA 2048)                 │
 └────────────────────────────────────────────────────────────┘
@@ -295,7 +507,7 @@ semplice che funziona.</em>
 
 <div class="card">
 <h3><span class="dot emerald"></span> Handshake 5 fasi — passo passo</h3>
-<pre>
+<pre><span class="lang-tag">sequenza</span>
 1. 🔐  TLS 1.3           Mutual TLS con CA condivisa
 2. 📋  VERSION           Negozia versione protocollo
 3. 🆔  MCC + PoP         Scambio identità + proof-of-possession
@@ -311,7 +523,7 @@ Dopo handshake:
 
 <div class="card">
 <h3><span class="dot violet"></span> Revoca distribuita</h3>
-<pre>
+<pre><span class="lang-tag">flusso</span>
 1. Un agente viene compromesso → seriale revocato
 2. Revoca inserita nel CuckooFilter locale
 3. Gossip TCP (porta 8444) propaga la revoca ai peer
@@ -319,21 +531,21 @@ Dopo handshake:
 5. Al prossimo handshake, l'agente revocato viene rifiutato
 
 DegradationPolicy:
-  CONFIRMED    → peer visto di recente, RootStore sincronizzato
-  STALE        → peer non visto da > 1h, usare con cautela
-  UNCERTAIN    → peer sconosciuto, handshake completo richiesto
+  <span class="tag green">CONFIRMED</span>    → peer visto di recente, RootStore sincronizzato
+  <span class="tag amber">STALE</span>       → peer non visto da &gt; 1h, usare con cautela
+  <span class="tag rose">UNCERTAIN</span>    → peer sconosciuto, handshake completo richiesto
 </pre>
 </div>
 
-<!-- ============================================================ -->
-<!-- 4. COSA CI SI PUO' FARE — ESEMPI -->
-<!-- ============================================================ -->
-<h2>4. Cosa ci si può fare — esempi reali</h2>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- 4. ESEMPI -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2 id="sec4"><span class="sec-num">4</span> Cosa ci si può fare — esempi reali</h2>
 
+<div class="grid">
 <div class="card">
-<h3><span class="dot cyan"></span> Due agenti che collaborano (TCP)</h3>
-<pre>
-import asyncio
+<h3><span class="dot cyan"></span> Due agenti (TCP)</h3>
+<pre><span class="lang-tag">python</span><br>import asyncio
 from atp_sdk import SimpleATPServer, SimpleATPClient
 
 async def main():
@@ -350,9 +562,8 @@ asyncio.run(main())
 </div>
 
 <div class="card">
-<h3><span class="dot emerald"></span> Stessa cosa, via QUIC (RFC 9000)</h3>
-<pre>
-import asyncio
+<h3><span class="dot emerald"></span> Stessa cosa, via QUIC</h3>
+<pre><span class="lang-tag">python</span><br>import asyncio
 from atp_quic import QUICServer, QUICClient
 
 async def main():
@@ -365,44 +576,46 @@ async def main():
 asyncio.run(main())
 </pre>
 </div>
+</div>
 
+<div class="grid">
 <div class="card">
 <h3><span class="dot violet"></span> Pipeline a 3 agenti</h3>
-<pre>
-# research_assistant.py — 3 agenti in pipeline
-1. Researcher   → cerca informazioni su DeepSeek
+<pre><span class="lang-tag">architettura</span><br># research_assistant.py
+1. Researcher   → cerca info su DeepSeek
 2. FactChecker  → verifica le fonti
-3. Summarizer   → produce un report finale
+3. Summarizer   → report finale
 
-Ogni agente è un SimpleATPServer con un task_handler specializzato.
-I task vengono inoltrati da un agente all'altro via ATP.
+Ogni agente è un SimpleATPServer
+con task_handler specializzato.
+I task vengono inoltrati via ATP.
 </pre>
 </div>
 
 <div class="card">
-<h3><span class="dot rose"></span> Connessione via internet (Key Card)</h3>
-<pre>
-# L'insegnante esporta una Key Card su USB
-school_server.py          # genera atp-school.card
+<h3><span class="dot rose"></span> Key Card (internet)</h3>
+<pre><span class="lang-tag">deploy</span><br># Insegnante esporta Key Card su USB
+school_server.py    → atp-school.card
 
-# L'insegnante importa la card e si connette
-teacher_client.py         # carica la card, verifica MCC
+# Insegnante importa la card
+teacher_client.py   → carica card, verifica MCC
 
-# Nessun DNS, nessun certificato, nessun server centrale
-# La Key Card contiene tutto: IP, porta, chiave pubblica Ed25519
+# Nessun DNS, nessun certificato
+# Nessun server centrale
+# La Key Card contiene:
+# IP + porta + chiave Ed25519
 </pre>
 </div>
+</div>
 
-<!-- ============================================================ -->
-<!-- 5. FLOWCHART -->
-<!-- ============================================================ -->
-<h2>5. Flowchart — Il ciclo di vita di un task ATP</h2>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- 5. FLOWCHART SVG -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2 id="sec5"><span class="sec-num">5</span> Flowchart — Il ciclo di vita di un task ATP</h2>
 
 <div class="diagram-card">
+<svg viewBox="0 0 1000 890" width="100%" height="auto" style="max-width:1000px">
 
-<svg viewBox="0 0 1000 870" width="100%" height="auto" style="max-width:1000px">
-  
-  <!-- Background grid -->
   <defs>
     <pattern id="g" width="20" height="20" patternUnits="userSpaceOnUse">
       <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#1e293b" stroke-width="0.3"/>
@@ -423,198 +636,186 @@ teacher_client.py         # carica la card, verifica MCC
       <feGaussianBlur stdDeviation="2" result="blur"/>
       <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
+    <linearGradient id="grad-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0b1120"/>
+      <stop offset="100%" stop-color="#020617"/>
+    </linearGradient>
   </defs>
-  
-  <rect width="1000" height="870" fill="url(#g)"/>
-  
+
+  <rect width="1000" height="890" fill="url(#grad-bg)"/>
+  <rect width="1000" height="890" fill="url(#g)"/>
+
   <!-- Title -->
-  <text x="500" y="30" text-anchor="middle" fill="#f1f5f9" font-size="16" font-weight="700">Ciclo di vita di un task ATP</text>
-  <text x="500" y="47" text-anchor="middle" fill="#64748b" font-size="9">dalla connessione al risultato</text>
-  
-  <!-- ═══════════════════════════════════════════════════════════════ -->
-  <!-- PHASE 1: TLS Handshake -->
-  <!-- ═══════════════════════════════════════════════════════════════ -->
-  
-  <rect x="50" y="65" width="900" height="100" rx="8" fill="#0f172a" stroke="#22d3ee" stroke-width="1" stroke-dasharray="4,3" opacity="0.6"/>
-  <rect x="50" y="65" width="120" height="22" rx="4" fill="#083344"/>
-  <text x="65" y="80" fill="#22d3ee" font-size="9" font-weight="500">FASE 1 · TRASPORTO</text>
-  
+  <text x="500" y="32" text-anchor="middle" fill="#f1f5f9" font-size="16" font-weight="700" filter="url(#glow)">Ciclo di vita di un task ATP</text>
+  <text x="500" y="50" text-anchor="middle" fill="#64748b" font-size="9">dalla connessione al risultato</text>
+
+  <!-- ═══════ PHASE 1 ═══════ -->
+  <rect x="40" y="70" width="920" height="105" rx="10" fill="#0b1120" stroke="#22d3ee" stroke-width="1" stroke-dasharray="4,3" opacity="0.7"/>
+  <rect x="40" y="70" width="125" height="24" rx="5" fill="#083344"/>
+  <text x="54" y="86" fill="#22d3ee" font-size="9" font-weight="600">FASE 1 · TRASPORTO</text>
+
   <!-- TCP Option -->
-  <rect x="80" y="100" width="160" height="44" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
-  <text x="160" y="120" text-anchor="middle" fill="#22d3ee" font-size="11" font-weight="700">TCP + TLS 1.3</text>
-  <text x="160" y="135" text-anchor="middle" fill="#64748b" font-size="8">CA Ed25519 condivisa</text>
-  
-  <!-- OR -->
-  <text x="260" y="127" text-anchor="middle" fill="#64748b" font-size="11">oppure</text>
-  
+  <rect x="70" y="108" width="170" height="48" rx="6" fill="rgba(8,51,68,0.5)" stroke="#22d3ee" stroke-width="1.5"/>
+  <text x="155" y="130" text-anchor="middle" fill="#22d3ee" font-size="12" font-weight="700">TCP + TLS 1.3</text>
+  <text x="155" y="146" text-anchor="middle" fill="#64748b" font-size="8">CA Ed25519 condivisa</text>
+
+  <text x="265" y="137" text-anchor="middle" fill="#64748b" font-size="10">oppure</text>
+
   <!-- QUIC Option -->
-  <rect x="300" y="100" width="160" height="44" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
-  <text x="380" y="120" text-anchor="middle" fill="#22d3ee" font-size="11" font-weight="700">QUIC (RFC 9000)</text>
-  <text x="380" y="135" text-anchor="middle" fill="#64748b" font-size="8">RSA 2048 · aioquic</text>
-  
-  <!-- Fallback -->
-  <text x="500" y="127" text-anchor="middle" fill="#64748b" font-size="9">+</text>
-  
-  <rect x="520" y="100" width="200" height="44" rx="6" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.5"/>
-  <text x="620" y="120" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="700">HandshakeRateLimiter</text>
-  <text x="620" y="135" text-anchor="middle" fill="#64748b" font-size="8">10 tentativi / 60s per IP</text>
-  
-  <!-- Arrow Phase 1 → 2 -->
-  <line x1="500" y1="165" x2="500" y2="195" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrow)"/>
-  
-  <!-- ═══════════════════════════════════════════════════════════════ -->
-  <!-- PHASE 2: ATP Handshake -->
-  <!-- ═══════════════════════════════════════════════════════════════ -->
-  
-  <rect x="50" y="200" width="900" height="170" rx="8" fill="#0f172a" stroke="#34d399" stroke-width="1" stroke-dasharray="4,3" opacity="0.6"/>
-  <rect x="50" y="200" width="130" height="22" rx="4" fill="#064e3b"/>
-  <text x="70" y="215" fill="#34d399" font-size="9" font-weight="500">FASE 2 · HANDSHAKE (5 fasi)</text>
-  
-  <!-- Step 1: Version -->
-  <rect x="80" y="235" width="145" height="50" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
-  <text x="152" y="255" text-anchor="middle" fill="#34d399" font-size="11" font-weight="700">1. VERSION</text>
-  <text x="152" y="270" text-anchor="middle" fill="#64748b" font-size="8">0x30 PROPOSE → 0x31 ACK</text>
-  
-  <line x1="225" y1="260" x2="260" y2="260" stroke="#34d399" stroke-width="1" marker-end="url(#arrow-green)"/>
-  
-  <!-- Step 2: MCC -->
-  <rect x="265" y="235" width="145" height="50" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
-  <text x="337" y="255" text-anchor="middle" fill="#34d399" font-size="11" font-weight="700">2. MCC + PoP</text>
-  <text x="337" y="270" text-anchor="middle" fill="#64748b" font-size="8">0x40 BIND → 0x41 ACK</text>
-  
-  <line x1="410" y1="260" x2="445" y2="260" stroke="#34d399" stroke-width="1" marker-end="url(#arrow-green)"/>
-  
-  <!-- Step 3: Capability -->
-  <rect x="450" y="235" width="145" height="50" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
-  <text x="522" y="255" text-anchor="middle" fill="#34d399" font-size="11" font-weight="700">3. CAPABILITY</text>
-  <text x="522" y="270" text-anchor="middle" fill="#64748b" font-size="8">0x50 CAP → 0x51 CAP_ACK</text>
-  
-  <line x1="595" y1="260" x2="640" y2="260" stroke="#34d399" stroke-width="1" marker-end="url(#arrow-green)"/>
-  
-  <!-- Post-handshake actions -->
-  <rect x="645" y="235" width="270" height="50" rx="6" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
-  <text x="780" y="253" text-anchor="middle" fill="#a78bfa" font-size="10" font-weight="700">Handshake completato</text>
-  <text x="780" y="266" text-anchor="middle" fill="#64748b" font-size="8">E2E key derivation</text>
-  <text x="780" y="278" text-anchor="middle" fill="#64748b" font-size="8">RootStore push</text>
-  
-  <!-- Arrow Phase 2 → 3 -->
-  <line x1="500" y1="370" x2="500" y2="400" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrow-green)"/>
-  
-  <!-- ═══════════════════════════════════════════════════════════════ -->
-  <!-- PHASE 3: Task Cycle -->
-  <!-- ═══════════════════════════════════════════════════════════════ -->
-  
-  <rect x="50" y="405" width="900" height="230" rx="8" fill="#0f172a" stroke="#a78bfa" stroke-width="1" stroke-dasharray="4,3" opacity="0.6"/>
-  <rect x="50" y="405" width="120" height="22" rx="4" fill="#3b0764"/>
-  <text x="65" y="420" fill="#a78bfa" font-size="9" font-weight="500">FASE 3 · TASK CYCLE</text>
-  
-  <!-- Client sends TASK_REQUEST -->
-  <rect x="80" y="440" width="220" height="60" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
-  <text x="190" y="462" text-anchor="middle" fill="#22d3ee" font-size="11" font-weight="700">TASK_REQUEST (0x01)</text>
-  <text x="190" y="478" text-anchor="middle" fill="#64748b" font-size="8">task_type + payload + deadline</text>
-  <text x="190" y="491" text-anchor="middle" fill="#64748b" font-size="8">E2E ciphertext (AES-GCM + Ed25519)</text>
-  
-  <!-- Arrow from client to server -->
-  <line x1="300" y1="470" x2="370" y2="470" stroke="#a78bfa" stroke-width="2" marker-end="url(#arrow-violet)"/>
-  
-  <!-- Server processes -->
-  <rect x="375" y="440" width="220" height="60" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
-  <text x="485" y="460" text-anchor="middle" fill="#34d399" font-size="11" font-weight="700">Server processa</text>
-  <text x="485" y="476" text-anchor="middle" fill="#64748b" font-size="8">Fire-and-forget (non blocca)</text>
-  <text x="485" y="490" text-anchor="middle" fill="#64748b" font-size="8">TASK_ACK (0x03) immediato</text>
-  
-  <line x1="595" y1="470" x2="660" y2="470" stroke="#a78bfa" stroke-width="2" marker-end="url(#arrow-violet)"/>
-  
+  <rect x="310" y="108" width="170" height="48" rx="6" fill="rgba(8,51,68,0.5)" stroke="#22d3ee" stroke-width="1.5"/>
+  <text x="395" y="130" text-anchor="middle" fill="#22d3ee" font-size="12" font-weight="700">QUIC (RFC 9000)</text>
+  <text x="395" y="146" text-anchor="middle" fill="#64748b" font-size="8">RSA 2048 · aioquic</text>
+
+  <text x="510" y="137" text-anchor="middle" fill="#64748b" font-size="8">+</text>
+
+  <!-- Rate Limiter -->
+  <rect x="535" y="108" width="210" height="48" rx="6" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="640" y="130" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">HandshakeRateLimiter</text>
+  <text x="640" y="146" text-anchor="middle" fill="#64748b" font-size="8">10 tentativi / 60s per IP</text>
+
+  <!-- Arrow 1→2 -->
+  <line x1="500" y1="175" x2="500" y2="205" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- ═══════ PHASE 2 ═══════ -->
+  <rect x="40" y="210" width="920" height="170" rx="10" fill="#0b1120" stroke="#34d399" stroke-width="1" stroke-dasharray="4,3" opacity="0.7"/>
+  <rect x="40" y="210" width="135" height="24" rx="5" fill="#064e3b"/>
+  <text x="54" y="226" fill="#34d399" font-size="9" font-weight="600">FASE 2 · HANDSHAKE</text>
+
+  <!-- Step 1 -->
+  <rect x="70" y="248" width="150" height="52" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+  <text x="145" y="270" text-anchor="middle" fill="#34d399" font-size="11" font-weight="700">1. VERSION</text>
+  <text x="145" y="286" text-anchor="middle" fill="#64748b" font-size="8">0x30 → 0x31</text>
+
+  <line x1="220" y1="274" x2="258" y2="274" stroke="#34d399" stroke-width="1.2" marker-end="url(#arrow-green)"/>
+
+  <!-- Step 2 -->
+  <rect x="262" y="248" width="150" height="52" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+  <text x="337" y="270" text-anchor="middle" fill="#34d399" font-size="11" font-weight="700">2. MCC + PoP</text>
+  <text x="337" y="286" text-anchor="middle" fill="#64748b" font-size="8">0x40 → 0x41</text>
+
+  <line x1="412" y1="274" x2="450" y2="274" stroke="#34d399" stroke-width="1.2" marker-end="url(#arrow-green)"/>
+
+  <!-- Step 3 -->
+  <rect x="454" y="248" width="150" height="52" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+  <text x="529" y="270" text-anchor="middle" fill="#34d399" font-size="11" font-weight="700">3. CAPABILITY</text>
+  <text x="529" y="286" text-anchor="middle" fill="#64748b" font-size="8">0x50 → 0x51</text>
+
+  <line x1="604" y1="274" x2="648" y2="274" stroke="#34d399" stroke-width="1.2" marker-end="url(#arrow-green)"/>
+
+  <!-- Post-handshake -->
+  <rect x="652" y="248" width="280" height="52" rx="6" fill="rgba(76,29,149,0.35)" stroke="#a78bfa" stroke-width="1.5"/>
+  <text x="792" y="268" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="700">Handshake completato</text>
+  <text x="792" y="282" text-anchor="middle" fill="#64748b" font-size="8">E2E key derivation</text>
+  <text x="792" y="294" text-anchor="middle" fill="#64748b" font-size="8">RootStore push · PING/PONG 30s</text>
+
+  <!-- Arrow 2→3 -->
+  <line x1="500" y1="380" x2="500" y2="410" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrow-green)"/>
+
+  <!-- ═══════ PHASE 3 ═══════ -->
+  <rect x="40" y="415" width="920" height="240" rx="10" fill="#0b1120" stroke="#a78bfa" stroke-width="1" stroke-dasharray="4,3" opacity="0.7"/>
+  <rect x="40" y="415" width="125" height="24" rx="5" fill="#3b0764"/>
+  <text x="54" y="431" fill="#a78bfa" font-size="9" font-weight="600">FASE 3 · TASK CYCLE</text>
+
+  <!-- Request -->
+  <rect x="70" y="452" width="230" height="64" rx="6" fill="rgba(8,51,68,0.5)" stroke="#22d3ee" stroke-width="1.5"/>
+  <text x="185" y="475" text-anchor="middle" fill="#22d3ee" font-size="11" font-weight="700">TASK_REQUEST (0x01)</text>
+  <text x="185" y="492" text-anchor="middle" fill="#64748b" font-size="8">task_type + payload + deadline</text>
+  <text x="185" y="506" text-anchor="middle" fill="#64748b" font-size="8">E2E ciphertext (AES-GCM + Ed25519)</text>
+
+  <line x1="300" y1="484" x2="368" y2="484" stroke="#a78bfa" stroke-width="2" marker-end="url(#arrow-violet)"/>
+
+  <!-- Server -->
+  <rect x="372" y="452" width="230" height="64" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+  <text x="487" y="473" text-anchor="middle" fill="#34d399" font-size="11" font-weight="700">Server processa</text>
+  <text x="487" y="490" text-anchor="middle" fill="#64748b" font-size="8">Fire-and-forget (non blocca)</text>
+  <text x="487" y="505" text-anchor="middle" fill="#64748b" font-size="8">TASK_ACK (0x03) immediato</text>
+
+  <line x1="602" y1="484" x2="670" y2="484" stroke="#a78bfa" stroke-width="2" marker-end="url(#arrow-violet)"/>
+
   <!-- Response -->
-  <rect x="665" y="440" width="250" height="60" rx="6" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
-  <text x="790" y="462" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="700">TASK_RESPONSE (0x02)</text>
-  <text x="790" y="478" text-anchor="middle" fill="#64748b" font-size="8">result_payload (E2E ciphertext)</text>
-  <text x="790" y="491" text-anchor="middle" fill="#64748b" font-size="8">oppure TASK_ERROR (0x04)</text>
-  
-  <!-- Streaming detail -->
-  <rect x="80" y="515" width="400" height="50" rx="6" fill="rgba(251,146,60,0.3)" stroke="#fb923c" stroke-width="1.5"/>
-  <text x="280" y="535" text-anchor="middle" fill="#fb923c" font-size="10" font-weight="700">Task streaming (opzionale)</text>
-  <text x="280" y="552" text-anchor="middle" fill="#64748b" font-size="8">partial=true + sequence → chunk multipli fino a partial=false</text>
-  
-  <line x1="480" y1="540" x2="600" y2="540" stroke="#fb923c" stroke-width="1" stroke-dasharray="4,3"/>
-  
-  <rect x="605" y="515" width="310" height="50" rx="6" fill="rgba(251,146,60,0.3)" stroke="#fb923c" stroke-width="1.5"/>
-  <text x="760" y="535" text-anchor="middle" fill="#fb923c" font-size="10" font-weight="700">Risultato strutturato</text>
-  <text x="760" y="552" text-anchor="middle" fill="#64748b" font-size="8">{status, data, error_code, error_message}</text>
-  
-  <!-- Arrow Phase 3 → 4 -->
-  <line x1="500" y1="635" x2="500" y2="665" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrow-violet)"/>
-  
-  <!-- ═══════════════════════════════════════════════════════════════ -->
-  <!-- PHASE 4: Revocation & Security -->
-  <!-- ═══════════════════════════════════════════════════════════════ -->
-  
-  <rect x="50" y="670" width="900" height="100" rx="8" fill="#0f172a" stroke="#fb7185" stroke-width="1" stroke-dasharray="4,3" opacity="0.6"/>
-  <rect x="50" y="670" width="140" height="22" rx="4" fill="#4c0519"/>
-  <text x="70" y="685" fill="#fb7185" font-size="9" font-weight="500">FASE 4 · REVOCA &amp; SICUREZZA</text>
-  
-  <rect x="80" y="705" width="200" height="44" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
-  <text x="180" y="725" text-anchor="middle" fill="#fb7185" font-size="10" font-weight="700">CuckooFilter</text>
-  <text x="180" y="740" text-anchor="middle" fill="#64748b" font-size="8">1024 bucket × 4 slot</text>
-  
-  <line x1="280" y1="727" x2="330" y2="727" stroke="#fb7185" stroke-width="1" marker-end="url(#arrow-rose)"/>
-  
-  <rect x="335" y="705" width="200" height="44" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
-  <text x="435" y="725" text-anchor="middle" fill="#fb7185" font-size="10" font-weight="700">Gossip TCP (8444)</text>
-  <text x="435" y="740" text-anchor="middle" fill="#64748b" font-size="8">fanout 3, seriali CBOR</text>
-  
-  <line x1="535" y1="727" x2="585" y2="727" stroke="#fb7185" stroke-width="1" marker-end="url(#arrow-rose)"/>
-  
-  <rect x="590" y="705" width="200" height="44" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
-  <text x="690" y="725" text-anchor="middle" fill="#fb7185" font-size="10" font-weight="700">RootStore</text>
-  <text x="690" y="740" text-anchor="middle" fill="#64748b" font-size="8">JSON persistente + chain</text>
-  
-  <line x1="790" y1="727" x2="830" y2="727" stroke="#fb7185" stroke-width="1" marker-end="url(#arrow-rose)"/>
-  
-  <rect x="835" y="705" width="90" height="44" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
-  <text x="880" y="726" text-anchor="middle" fill="#fb7185" font-size="9" font-weight="700">Metrics</text>
-  <text x="880" y="740" text-anchor="middle" fill="#64748b" font-size="7">Prometheus</text>
-  
-  <!-- ═══════════════════════════════════════════════════════════════ -->
-  <!-- LEGEND -->
-  <!-- ═══════════════════════════════════════════════════════════════ -->
-  
-  <rect x="50" y="795" width="900" height="55" rx="8" fill="#0f172a" stroke="#1e293b" stroke-width="1"/>
-  <text x="70" y="815" fill="#64748b" font-size="9">LEGENDA:</text>
-  
-  <rect x="140" y="802" width="12" height="12" rx="2" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
-  <text x="158" y="812" fill="#94a3b8" font-size="8">Trasporto</text>
-  
-  <rect x="230" y="802" width="12" height="12" rx="2" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
-  <text x="248" y="812" fill="#94a3b8" font-size="8">Handshake</text>
-  
-  <rect x="330" y="802" width="12" height="12" rx="2" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
-  <text x="348" y="812" fill="#94a3b8" font-size="8">Task</text>
-  
-  <rect x="400" y="802" width="12" height="12" rx="2" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
-  <text x="418" y="812" fill="#94a3b8" font-size="8">Revoca/Security</text>
-  
-  <rect x="530" y="802" width="12" height="12" rx="2" fill="rgba(251,146,60,0.3)" stroke="#fb923c" stroke-width="1.5"/>
-  <text x="548" y="812" fill="#94a3b8" font-size="8">Streaming</text>
-  
-  <rect x="620" y="802" width="12" height="12" rx="2" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.5"/>
-  <text x="638" y="812" fill="#94a3b8" font-size="8">Rate limiting</text>
-  
-  <text x="70" y="838" fill="#475569" font-size="8">Tutti i frame sono CBOR canonico + BLAKE3 + Ed25519 firmati. Nessun fallback/mock. 86 test. 5 moduli. 4 dipendenze.</text>
+  <rect x="674" y="452" width="260" height="64" rx="6" fill="rgba(76,29,149,0.35)" stroke="#a78bfa" stroke-width="1.5"/>
+  <text x="804" y="475" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="700">TASK_RESPONSE (0x02)</text>
+  <text x="804" y="492" text-anchor="middle" fill="#64748b" font-size="8">result_payload (E2E ciphertext)</text>
+  <text x="804" y="506" text-anchor="middle" fill="#64748b" font-size="8">oppure TASK_ERROR (0x04)</text>
+
+  <!-- Streaming row -->
+  <rect x="70" y="530" width="400" height="52" rx="6" fill="rgba(251,146,60,0.2)" stroke="#fb923c" stroke-width="1.5"/>
+  <text x="270" y="552" text-anchor="middle" fill="#fb923c" font-size="10" font-weight="700">Task streaming (opzionale)</text>
+  <text x="270" y="570" text-anchor="middle" fill="#64748b" font-size="8">partial=true + sequence → chunk fino a partial=false</text>
+
+  <line x1="470" y1="556" x2="590" y2="556" stroke="#fb923c" stroke-width="1" stroke-dasharray="4,3"/>
+
+  <rect x="594" y="530" width="340" height="52" rx="6" fill="rgba(251,146,60,0.2)" stroke="#fb923c" stroke-width="1.5"/>
+  <text x="764" y="552" text-anchor="middle" fill="#fb923c" font-size="10" font-weight="700">Risultato strutturato</text>
+  <text x="764" y="570" text-anchor="middle" fill="#64748b" font-size="8">{status, data, error_code, error_message}</text>
+
+  <!-- Arrow 3→4 -->
+  <line x1="500" y1="655" x2="500" y2="685" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrow-violet)"/>
+
+  <!-- ═══════ PHASE 4 ═══════ -->
+  <rect x="40" y="690" width="920" height="105" rx="10" fill="#0b1120" stroke="#fb7185" stroke-width="1" stroke-dasharray="4,3" opacity="0.7"/>
+  <rect x="40" y="690" width="150" height="24" rx="5" fill="#4c0519"/>
+  <text x="54" y="706" fill="#fb7185" font-size="9" font-weight="600">FASE 4 · REVOCA &amp; SICUREZZA</text>
+
+  <rect x="70" y="726" width="190" height="48" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+  <text x="165" y="748" text-anchor="middle" fill="#fb7185" font-size="10" font-weight="700">CuckooFilter</text>
+  <text x="165" y="763" text-anchor="middle" fill="#64748b" font-size="8">1024×4 slot, FPR 2.3e-31</text>
+
+  <line x1="260" y1="750" x2="308" y2="750" stroke="#fb7185" stroke-width="1.2" marker-end="url(#arrow-rose)"/>
+
+  <rect x="312" y="726" width="190" height="48" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+  <text x="407" y="748" text-anchor="middle" fill="#fb7185" font-size="10" font-weight="700">Gossip TCP (8444)</text>
+  <text x="407" y="763" text-anchor="middle" fill="#64748b" font-size="8">fanout 3, seriali CBOR</text>
+
+  <line x1="502" y1="750" x2="550" y2="750" stroke="#fb7185" stroke-width="1.2" marker-end="url(#arrow-rose)"/>
+
+  <rect x="554" y="726" width="190" height="48" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+  <text x="649" y="748" text-anchor="middle" fill="#fb7185" font-size="10" font-weight="700">RootStore</text>
+  <text x="649" y="763" text-anchor="middle" fill="#64748b" font-size="8">JSON persistente + chain</text>
+
+  <line x1="744" y1="750" x2="790" y2="750" stroke="#fb7185" stroke-width="1.2" marker-end="url(#arrow-rose)"/>
+
+  <rect x="794" y="726" width="140" height="48" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+  <text x="864" y="748" text-anchor="middle" fill="#fb7185" font-size="10" font-weight="700">Metriche</text>
+  <text x="864" y="763" text-anchor="middle" fill="#64748b" font-size="8">Prometheus</text>
+
+  <!-- Legend -->
+  <rect x="40" y="810" width="920" height="58" rx="8" fill="#0b1120" stroke="#1e293b" stroke-width="1"/>
+  <text x="62" y="832" fill="#64748b" font-size="9">LEGENDA:</text>
+
+  <rect x="130" y="824" width="12" height="12" rx="3" fill="rgba(8,51,68,0.5)" stroke="#22d3ee" stroke-width="1.5"/>
+  <text x="148" y="834" fill="#94a3b8" font-size="8">Trasporto</text>
+
+  <rect x="220" y="824" width="12" height="12" rx="3" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+  <text x="238" y="834" fill="#94a3b8" font-size="8">Handshake</text>
+
+  <rect x="320" y="824" width="12" height="12" rx="3" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+  <text x="338" y="834" fill="#94a3b8" font-size="8">Task</text>
+
+  <rect x="400" y="824" width="12" height="12" rx="3" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+  <text x="418" y="834" fill="#94a3b8" font-size="8">Revoca</text>
+
+  <rect x="490" y="824" width="12" height="12" rx="3" fill="rgba(251,146,60,0.2)" stroke="#fb923c" stroke-width="1.5"/>
+  <text x="508" y="834" fill="#94a3b8" font-size="8">Streaming</text>
+
+  <rect x="590" y="824" width="12" height="12" rx="3" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="608" y="834" fill="#94a3b8" font-size="8">Rate limiting</text>
+
+  <text x="62" y="856" fill="#475569" font-size="8">Tutti i frame sono CBOR canonico + BLAKE3 + Ed25519 firmati. 86 test. 5 moduli. 4 dipendenze. Zero fallback/mock.</text>
 
 </svg>
-
 </div>
 
-<!-- ============================================================ -->
-<!-- FOOTER -->
-<!-- ============================================================ -->
-
-<div style="margin-top:40px;padding:20px 0;border-top:1px solid #1e293b;text-align:center">
-  <p style="font-size:11px;color:#475569">
-    ATP v1.8 · <a href="https://github.com/brainbooster30-code/ATP-Protocol" target="_blank">github.com/brainbooster30-code/ATP-Protocol</a><br>
-    MIT License · Python 3.12+ · 86 test · 4 dipendenze<br>
-    Progettato per agenti autonomi, costruito per durare.
+<!-- ═══════════════ FOOTER ═══════════════ -->
+<div class="footer">
+  <p>
+    <strong style="color:#22d3ee">ATP</strong> Agent Transport Protocol · v1.8
+    <span class="sep">·</span>
+    <a href="https://github.com/brainbooster30-code/ATP-Protocol">GitHub</a>
+    <span class="sep">·</span>
+    MIT License · Python 3.12+
+    <br>
+    86 test · 4 dipendenze · 10 moduli · Progettato per agenti autonomi
   </p>
 </div>
 
