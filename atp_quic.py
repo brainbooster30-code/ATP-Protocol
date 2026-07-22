@@ -121,6 +121,7 @@ class QUICServer:
         self._server = None
         self._running = False
         self.identity = AgentIdentity(agent_name="atp-quic-server")
+        self._push_root_store = False  # only enable for multi-authority deployments
 
     async def start(self, host: str = SERVER_HOST, port: int = SERVER_PORT):
         config = _make_quic_config(server_side=True, cn=f"quic-server-{host}-{port}")
