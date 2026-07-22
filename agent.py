@@ -755,6 +755,59 @@ class ATPAgent:
                             })
                     else:
                         logger.warning("RootStore update rejected (bad signature)")
+            # Federation handlers (v2.0)
+            elif ft == 0x60:
+                """PEER_DISCOVERY — receive peer list from federated peer."""
+                peers = frame.get("peers", [])
+                peer_node_id = frame.get("node_id", "")
+                if peers:
+                    from federation import FederationRouter, PeerRecord
+                    if not hasattr(self, "_fed_router"):
+                        self._fed_router = None  # set by ATPServer
+                    if self._fed_router:
+                        for p in peers[:10]:
+                            if p.get("peer_id") == self._fed_router.node_id:
+                                continue
+                            rec = PeerRecord(
+                                peer_id=p["peer_id"],
+                                host=p.get("host", ""),
+                                port=p.get("port", 0),
+                                ed25519_pk=p.get("ed25519_pk", b""),
+                                x25519_pk=b"",
+                                capabilities=p.get("capabilities", []),
+                            )
+                            asyncio.create_task(
+                                self._fed_router.add_or_update_peer(rec, peer_node_id)
+                            )
+                        # Send ACK
+                        ack = {"header": build_header(0x63), "node_id": self.identity.agent_name}
+                        try: await self._send_frame(ack)
+                        except Exception: pass
+            elif ft == 0x61:
+                """PEER_HEARTBEAT — keepalive from federated peer."""
+                peer_id = frame.get("node_id", "")
+                if hasattr(self, "_fed_router") and self._fed_router:
+                    async with self._fed_router._peers_lock:
+                        if peer_id in self._fed_router._peers:
+                            self._fed_router._peers[peer_id].last_seen = time.time()
+            elif ft == 0x62:
+                """TASK_FORWARD — forward a task through the federation."""
+                inner_task = frame.get("task_frame", {})
+                target = frame.get("target_peer_id", "")
+                ttl = frame.get("ttl", 5)
+                if ttl <= 0:
+                    return  # TTL exhausted
+                # Re-forward if we're not the target
+                if hasattr(self, "_fed_router") and self._fed_router:
+                    if target and target != self._fed_router.node_id:
+                        # Forward to next hop
+                        asyncio.create_task(self._forward_task_to_peer(inner_task, target, ttl - 1))
+                    else:
+                        # We're the target: process locally
+                        asyncio.create_task(self._dispatch_frame(inner_task))
+            elif ft == 0x63:
+                """PEER_DISCOVERY_ACK — peer acknowledged our discovery."""
+                pass  # No action needed, just keepalive
             elif ft == 0x12:
                 logger.info("Received SHUTDOWN_ACK — closing cleanly")
             elif ft == 0x15:

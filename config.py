@@ -23,6 +23,7 @@ HANDSHAKE_TIMEOUT_S         = 30                     # max handshake duration
 
 # ── Production ────────────────────────────────────────────────────────────────
 MAX_CONCURRENT_CONNS        = 100    # max connessioni simultanee
+FED_PORT                    = 8450   # porta federazione (peer discovery + heartbeat)
 DRAIN_TIMEOUT_S             = 15     # tempo massimo per drain durante shutdown
 HEALTH_CHECK_PORT           = 8080   # porta HTTP per /health e /ready
 CIRCUIT_BREAKER_THRESHOLD   = 5      # errori consecutivi prima di aprire circuito

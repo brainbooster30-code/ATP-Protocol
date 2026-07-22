@@ -357,6 +357,12 @@ FRAME_TYPES: dict[int, str] = {
     0x16: "CONTROL_PONG",
     0x20: "ERROR",
     0x21: "ROOT_STORE_UPDATE",
+    # Federation (v2.0)
+    0x60: "PEER_DISCOVERY",
+    0x61: "PEER_HEARTBEAT",
+    0x62: "TASK_FORWARD",
+    0x63: "PEER_DISCOVERY_ACK",
+    # Handshake
     0x30: "VERSION_PROPOSE",
     0x31: "VERSION_ACK",
     0x40: "MCC_BIND_REQUEST",

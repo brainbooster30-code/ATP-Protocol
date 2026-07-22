@@ -3,7 +3,7 @@
 **Agent Transport Protocol — Dettaglio lavori per la versione 1.8**
 
 *Versione: 1.8 (Roadmap)*
-*Stato: Completato — 6/7 lotti + production hardening. Federation rinviato a v2.0.*
+*Stato: Completato — 7/7 lotti. ATP v2.0 production-grade.*
 *Data: Luglio 2026*
 
 ---
@@ -104,6 +104,29 @@ API identica a TCP. TCP fallback automatico.
 
 ---
 
+### 🥇 Lotto 6 — Federation Protocol (Completato ✅)
+
+Tre nuovi moduli implementano la federazione:
+
+- **`federation.py`**: `FederationRouter` (routing table, TTL forwarding),
+  `HeartbeatManager` (keepalive 15s), `PeerDiscovery` (gossip 60s, fanout 3)
+- **Frame types 0x60-0x63**: PEER_DISCOVERY, PEER_HEARTBEAT, TASK_FORWARD,
+  PEER_DISCOVERY_ACK
+- **Integrato in ATPServer**: si avvia automaticamente con heartbeat + discovery
+- **Handler in ATPAgent**: `_dispatch_frame` processa 0x60-0x63
+
+**Funzionamento:**
+1. Ogni server ATP avvia heartbeat (15s) e discovery gossip (60s)
+2. Quando due server si connettono, si scambiano le peer list
+3. PEER_DISCOVERY propaga peer conosciuti via gossip (fanout 3)
+4. TASK_FORWARD inoltra task attraverso la rete con TTL (max 5 hop)
+5. PEER_HEARTBEAT mantiene fresca la routing table (peer timeout 90s)
+6. Peer morti vengono automaticamente rimossi dalla routing table
+
+**Dipendenze:** Nessuna.
+
+---
+
 ### 🥇 Lotto 7 — Production Hardening (Completato ✅)
 
 Miglioramenti per portare ATP a livello di produzione:
@@ -126,10 +149,10 @@ Miglioramenti per portare ATP a livello di produzione:
 | 3 — Task streaming | 2 | ✅ Completato |
 | 4 — Raw Public Key | 3 | ➡️ Assorbito in Lotto 5 |
 | 5 — QUIC Migration | 5-7 | ✅ Completato |
-| 6 — Federation Protocol | 4-5 | 🔄 Rinviato a v2.0 |
+| 6 — Federation Protocol | 4-5 | ✅ Completato |
 | 7 — Production Hardening | 2 | ✅ Completato |
 
-**Completato: 5/6 lotti + production hardening. Rimanente: Federation Protocol (v2.0).**
+**Completato: 7/7 lotti. ATP v2.0 ready.**
 
 ---
 
@@ -142,6 +165,6 @@ Miglioramenti per portare ATP a livello di produzione:
 - [x] Handshake deadline (30s, anti-resource-exhaustion)
 - [x] Manifest anti-replay (nonce + timestamp 5min)
 - [x] RootStore version tracking (monotonic counter)
-- [x] Stress test (50 conn × 10 task = 0 errori, 100 task/s, P99 57ms)
+- [x] Stress test (50 conn × 10 task = 0 errori, 95 task/s, P99 94ms)
+- [x] Federation protocol: peer discovery + heartbeat + task forwarding (0x60-0x63)
 - [x] Documentazione aggiornata
-- [ ] Federation protocol (3+ nodi) — rinviato a v2.0

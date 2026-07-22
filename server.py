@@ -13,6 +13,7 @@ from typing import Optional
 
 from config import (
     SERVER_HOST, SERVER_PORT, CONNECTION_SETUP_TIMEOUT_MS, MAX_CONCURRENT_CONNS,
+    FED_PORT,
 )
 from agent import ATPAgent, AgentIdentity, make_ssl_context
 from monitor import Monitor, ERROR_OCCURRED
@@ -20,6 +21,10 @@ from atp_core import decode_frame, build_header, send_frame
 from production import (
     setup_logging, GracefulShutdown, HealthCheckServer, ConnectionLimiter,
     deepseek_circuit,
+)
+from federation import (
+    FederationRouter, HeartbeatManager, PeerDiscovery,
+    FED_HEARTBEAT_INTERVAL_S, FED_DISCOVERY_INTERVAL_S,
 )
 
 logger = logging.getLogger(__name__)
@@ -98,6 +103,20 @@ class ATPServer:
         self._health.ready = True
         logger.info("ATP Server ready — health check on :%s", self._health._port)
 
+        # Federation protocol (v2.0)
+        self._fed_router = FederationRouter(
+            node_id=self.identity.agent_name, host=host, port=FED_PORT
+        )
+        self._fed_heartbeat = HeartbeatManager(self._fed_router)
+        self._fed_discovery = PeerDiscovery(self._fed_router)
+        fed_hb = asyncio.create_task(self._fed_heartbeat.loop())
+        fed_disc = asyncio.create_task(self._fed_discovery.loop(agent=None))
+        if block:
+            self._shutdown.track(fed_hb)
+            self._shutdown.track(fed_disc)
+        logger.info("Federation protocol started (heartbeat=%ds, discovery=%ds, port=%d)",
+                     FED_HEARTBEAT_INTERVAL_S, FED_DISCOVERY_INTERVAL_S, FED_PORT)
+
         if not block:
             return  # test/embed mode: return after startup
 
@@ -158,6 +177,7 @@ class ATPServer:
                 task_handler=self._default_task_handler,
                 rate_limiter=RateLimiter(), anti_replay=AntiReplay(),
             )
+            agent._fed_router = getattr(self, "_fed_router", None)
             try:
                 ok = await agent.perform_handshake(reader, writer)
                 if ok:
