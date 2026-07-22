@@ -57,6 +57,8 @@ from agent_tls import (
     get_self_signed_cert, get_ca_cert_pem, get_cert_expiry_days,
     rotate_cert, make_ssl_context, get_quic_cert,
 )
+from agent_io import get_tls_peer_pk, send_frame_to, read_frame_from
+from agent_task import handle_task_request, forward_task_to_peer
 from authority import get_default_authority
 from monitor import (
     Monitor,
@@ -1180,30 +1182,8 @@ class ATPAgent:
 
     @staticmethod
     def _get_tls_peer_pk(writer) -> Optional[bytes]:
-        """Extract the TLS peer certificate's raw public key bytes.
-
-        Returns the public key bytes from the peer's TLS certificate, or None
-        if the peer certificate is not available (e.g. no TLS, anonymous).
-        Used for step 7 of MCC verification (agent_pk match).
-        """
-        try:
-            ssl_obj = writer.get_extra_info("ssl_object")
-            if ssl_obj is None:
-                return None
-            cert_der = ssl_obj.getpeercert(binary_form=True)
-            if cert_der is None:
-                return None
-            from cryptography import x509
-            from cryptography.hazmat.primitives import serialization
-            cert = x509.load_der_x509_certificate(cert_der)
-            pub_key = cert.public_key()
-            return pub_key.public_bytes(
-                encoding=serialization.Encoding.Raw,
-                format=serialization.PublicFormat.Raw,
-            )
-        except Exception:
-            logger.debug("Could not extract TLS peer public key", exc_info=True)
-            return None
+        """Extract TLS peer cert public key (delegates to agent_io)."""
+        return get_tls_peer_pk(writer)
 
     async def _server_handshake(self, reader, writer):
         """Responder-side handshake."""
@@ -1447,317 +1427,25 @@ class ATPAgent:
     # ══════════════════════════════════════════════════════════════════════
 
     async def _handle_task_request(self, frame: dict):
-        """Process an incoming task request and send response."""
-        header = frame.get("header", {})
-        task_type = frame.get("task_type", "unknown")
-        task_payload = frame.get("task_payload", b"")
-
-        # Extract task_id from request (used in all response frames)
-        task_id_from_req = header.get("task_id", header.get("frame_id", b"\x00"*16))
-
-        # Rate limiter check
-        if self.rate_limiter and not await self.rate_limiter.allow():
-            logger.warning("Rate limit exceeded for %s", self._conn_id)
-            err_header = build_header(0x04, task_id_from_req)
-            error_frame = {
-                "header": err_header,
-                "error_code": 0x0D,  # ERR_RATE_LIMITED
-                "error_message": "Rate limit exceeded",
-                "retry_after_ms": 1000,
-            }
-            await self._send_frame(error_frame)
-            if self.monitor:
-                self.monitor.add_event(RATE_LIMIT_HIT, {
-                    "conn_id": self._conn_id,
-                })
-            return
-
-        if self.monitor:
-            self.monitor.add_event(TASK_START, {
-                "conn_id": self._conn_id,
-                "task_type": task_type,
-                "direction": "incoming",
-            })
-
-        # Send TASK_ACK immediately
-        ack_header = build_header(0x03, task_id_from_req)
-        ack = {"header": ack_header}
-        await self._send_frame(ack)
-
-        # Process the task (track as _current_task for cancellation)
-        async def _process():
-            try:
-                # Decrypt incoming payload if E2E key is established
-                actual_payload = task_payload
-                if self._e2e_key and self._peer_ed25519_pk:
-                    decrypted = self._e2e_decrypt_verify(task_payload, self._e2e_key, self._peer_ed25519_pk)
-                    if decrypted is not None:
-                        actual_payload = decrypted
-                    else:
-                        logger.warning("E2E auth failed for incoming task")
-                elif self._e2e_key:
-                    decrypted = self._e2e_decrypt(task_payload, self._e2e_key)
-                    if decrypted is not None:
-                        actual_payload = decrypted
-
-                result_bytes = actual_payload  # default echo
-                if self.task_handler:
-                    result = await self.task_handler({**frame, "task_payload": actual_payload})
-                    if isinstance(result, dict):
-                        result_bytes = json.dumps(result).encode("utf-8")
-                    elif isinstance(result, bytes):
-                        result_bytes = result
-                    else:
-                        result_bytes = str(result).encode("utf-8")
-                elif task_type == "deepseek_chat":
-                    prompt = actual_payload.decode("utf-8", errors="replace")
-                    result_text = await self.call_deepseek(prompt, self.monitor, self._conn_id)
-                    if result_text:
-                        result = {"result": result_text}
-                    else:
-                        result = {"error": "DeepSeek returned no result"}
-                    result_bytes = json.dumps(result).encode("utf-8")
-
-                resp_header = build_header(0x02, task_id_from_req)
-                if isinstance(result_bytes, list) and len(result_bytes) > 1:
-                    # Streaming: send each chunk as partial response
-                    for idx, chunk in enumerate(result_bytes):
-                        is_last = (idx == len(result_bytes) - 1)
-                        if self._e2e_key and self._peer_ed25519_pk:
-                            enc = self._e2e_encrypt_signed(chunk, self._e2e_key, self.identity.ed25519_sk)
-                        elif self._e2e_key:
-                            enc = self._e2e_encrypt(chunk, self._e2e_key)
-                        else:
-                            enc = chunk
-                        chunk_resp = {
-                            "header": build_header(0x02, task_id_from_req),
-                            "status": 0,
-                            "result_payload": enc,
-                            "partial": not is_last,
-                            "sequence": idx + 1,
-                        }
-                        await self._send_frame(chunk_resp)
-                        if not is_last:
-                            await asyncio.sleep(0)
-                    encrypted_result = b""
-                else:
-                    if isinstance(result_bytes, list):
-                        result_bytes = result_bytes[0] if result_bytes else b""
-                    if self._e2e_key and self._peer_ed25519_pk:
-                        encrypted_result = self._e2e_encrypt_signed(result_bytes, self._e2e_key, self.identity.ed25519_sk)
-                    elif self._e2e_key:
-                        encrypted_result = self._e2e_encrypt(result_bytes, self._e2e_key)
-                    else:
-                        encrypted_result = result_bytes
-                response = {
-                    "header": resp_header,
-                    "status": 0,
-                    "result_payload": encrypted_result,
-                }
-                if not (isinstance(result_bytes, list) and len(result_bytes) > 1):
-                    await self._send_frame(response)
-
-                if self.monitor:
-                    self.monitor.add_event(TASK_COMPLETE, {
-                        "conn_id": self._conn_id,
-                        "task_type": task_type,
-                    })
-                    self.monitor.add_task({
-                        "task_id": (header.get("frame_id") or b"\x00"*16).hex()[:8],
-                        "task_type": task_type,
-                        "request": task_payload.decode("utf-8", errors="replace")[:80],
-                        "response": result_bytes.decode("utf-8", errors="replace")[:200],
-                        "status": "completed",
-                        "error_code": None,
-                        "latency_ms": 0,
-                        "agent": self.identity.agent_name,
-                        "direction": "received",
-                        "timestamp": time.time(),
-                    })
-
-            except asyncio.CancelledError:
-                logger.info("Task cancelled via TASK_CANCEL")
-                err_header = build_header(0x04, task_id_from_req)
-                error_frame = {
-                    "header": err_header,
-                    "error_code": 0x0F,  # ERR_TASK_CANCELLED
-                    "error_message": "Task cancelled by peer",
-                }
-                try:
-                    await self._send_frame(error_frame)
-                except Exception:
-                    pass
-                if self.monitor:
-                    self.monitor.add_event(TASK_ERROR, {
-                        "conn_id": self._conn_id,
-                        "error_code": 0x0F,
-                        "error_message": "Task cancelled by peer",
-                    })
-
-            except Exception as exc:
-                logger.exception("Task processing error")
-                err_header = build_header(0x04, task_id_from_req)
-                error_frame = {
-                    "header": err_header,
-                    "error_code": 0x0B,
-                    "error_message": str(exc),
-                }
-                await self._send_frame(error_frame)
-                if self.monitor:
-                    self.monitor.add_event(TASK_ERROR, {
-                        "conn_id": self._conn_id,
-                        "error_code": 0x0B,
-                        "error_message": str(exc),
-                    })
-                    self.monitor.add_task({
-                        "task_id": (header.get("frame_id") or b"\x00"*16).hex()[:8],
-                        "task_type": task_type,
-                        "request": task_payload.decode("utf-8", errors="replace")[:80],
-                        "response": str(exc)[:200],
-                        "status": "error",
-                        "error_code": 0x0B,
-                        "latency_ms": 0,
-                        "agent": self.identity.agent_name,
-                        "direction": "received",
-                        "timestamp": time.time(),
-                    })
-
-        self._current_task = asyncio.create_task(_process())
-        # Fire-and-forget: il reader loop continua mentre il task gira
-        self._current_task.add_done_callback(lambda t: setattr(self, '_current_task', None))
+        """Process an incoming task request (delegates to agent_task)."""
+        await handle_task_request(self, frame)
 
     # ══════════════════════════════════════════════════════════════════════
     #  Federation helpers
     # ══════════════════════════════════════════════════════════════════════
 
     async def _forward_task_to_peer(self, task_frame: dict, target: str, ttl: int):
-        """Forward a task to the next hop in the federation (v2.0).
-
-        Opens a NEW outbound connection to the target peer, sends the
-        TASK_FORWARD frame, and returns the connection to the pool.
-        The pool reuses connections across forwards, reducing handshake
-        overhead.
-
-        Each TASK_FORWARD frame is Ed25519-signed by the forwarder so
-        the receiver can verify authenticity using the forwarder's MCC.
-        """
-        if not hasattr(self, "_fed_router") or not self._fed_router:
-            return
-        try:
-            # Use the router's lookup (avoids duplicating the routing logic)
-            fwd_task = {"target_peer_id": target}
-            target_peer = await self._fed_router.forward_task(fwd_task, ttl)
-            if not target_peer:
-                logger.warning("Federation: target peer %s not in routing table", target[:16])
-                return
-            # Get a pooled outbound connection to the target peer
-            proxy = await self._fed_router.get_outbound_connection(
-                target_peer.host, target_peer.port,
-            )
-            if proxy is None:
-                logger.warning("Federation: cannot connect to target %s at %s:%s",
-                               target[:16], target_peer.host, target_peer.port)
-                return
-            try:
-                # Sign the forward with our Ed25519 key for authenticity
-                import cbor2 as _cbor2
-                from atp_core import ed25519_sign
-                fwd_payload = _cbor2.dumps({
-                    "target_peer_id": target,
-                    "ttl": ttl,
-                    "task_frame": task_frame,
-                    "forwarder_id": self.identity.agent_name,
-                }, canonical=True)
-                fwd_sig = ed25519_sign(self.identity.ed25519_sk, fwd_payload)
-                fwd = {
-                    "header": build_header(0x62),
-                    "target_peer_id": target,
-                    "ttl": ttl,
-                    "task_frame": task_frame,
-                    "signature": fwd_sig,
-                    "forwarder_id": self.identity.agent_name,
-                }
-                await proxy.agent._send_frame(fwd)
-                logger.info("Federation: forwarded signed task to %s at %s:%s (ttl=%d)",
-                            target[:16], target_peer.host, target_peer.port, ttl)
-            finally:
-                # Return to pool (not disconnect)
-                await self._fed_router.return_connection(
-                    target_peer.host, target_peer.port,
-                )
-        except Exception as exc:
-            logger.debug("Federation: forward failed — %s", exc)
+        """Forward a task to the next hop (delegates to agent_task)."""
+        await forward_task_to_peer(self, task_frame, target, ttl)
 
     # ══════════════════════════════════════════════════════════════════════
     #  I/O helpers
     # ══════════════════════════════════════════════════════════════════════
 
     async def _send_frame(self, payload: dict):
-        """Send a frame and log the event."""
-        ft = payload.get("header", {}).get("frame_type")
-        if self.monitor:
-            self.monitor.add_event(FRAME_SENT, {
-                "conn_id": self._conn_id,
-                "frame_type": ft,
-                "frame_name": FRAME_TYPES.get(ft, f"0x{ft:02x}"),
-            })
-        await send_frame(self._writer, payload)
+        """Send a frame (delegates to agent_io)."""
+        await send_frame_to(self, payload)
 
     async def _read_frame(self) -> Optional[dict]:
-        """Read a frame and log the event. Applies anti-replay and clock skew checks.
-
-        Uses BufferedFrameReader when available (higher throughput),
-        falls back to decode_frame for backward compat.
-        """
-        try:
-            if self._buffered_reader:
-                frame = await self._buffered_reader.read_frame()
-            else:
-                frame = await decode_frame(self._reader)
-        except Exception:
-            return None
-
-        if frame is None:
-            return None
-
-        header = frame.get("header", {})
-        ft = header.get("frame_type")
-        ts = header.get("timestamp", 0)
-        frame_id = header.get("frame_id", b"")
-
-        # Anti-replay check (server side, control and task frames only)
-        if self.anti_replay and self.is_server and frame_id and ft not in (0x30, 0x31, 0x40, 0x41, 0x42, 0x50):
-            now_ms = int(time.time() * 1000)
-            if not await self.anti_replay.is_new(frame_id, now_ms):
-                logger.warning("Anti-replay: duplicate frame_id %s", frame_id.hex()[:8])
-                return None
-
-        # Clock skew check (server side only)
-        if ts and self.is_server and ft:
-            from config import CLOCK_SKEW_MS
-            now_ms = int(time.time() * 1000)
-            if abs(now_ms - ts) > CLOCK_SKEW_MS:
-                logger.warning("Clock skew: %d ms (limit %d)", abs(now_ms - ts), CLOCK_SKEW_MS)
-                # Send TASK_ERROR with server_time_ms for clock correction
-                if ft == 0x01:  # only for task requests
-                    try:
-                        task_id_skew = header.get("task_id", b"\x00"*16)
-                        err_header = build_header(0x04, task_id_skew)
-                        error_frame = {
-                            "header": err_header,
-                            "error_code": 0x0C,  # ERR_CLOCK_SKEW
-                            "error_message": f"Clock skew {abs(now_ms - ts)}ms exceeds limit {CLOCK_SKEW_MS}ms",
-                            "server_time_ms": now_ms,
-                        }
-                        await self._send_frame(error_frame)
-                    except Exception:
-                        pass  # nosec — best-effort clock skew notification
-                return None
-
-        if self.monitor:
-            self.monitor.add_event(FRAME_RECEIVED, {
-                "conn_id": self._conn_id,
-                "frame_type": ft,
-                "frame_name": FRAME_TYPES.get(ft, f"0x{ft:02x}"),
-            })
-        return frame
+        """Read a frame with anti-replay and clock skew (delegates to agent_io)."""
+        return await read_frame_from(self)
