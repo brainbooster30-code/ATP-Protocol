@@ -271,12 +271,6 @@ svg text{font-family:'JetBrains Mono',monospace}
   </div>
   <h1>Agent Transport <span>Protocol</span></h1>
   <p class="sub">ATP è un protocollo che permette a due agenti software di identificarsi, verificarsi e collaborare in modo sicuro — senza server centrale, senza intermediari, senza configurazione di rete.</p>
-  <div class="hero-stats">
-    <div class="hero-stat"><div class="num">5</div><div class="lbl">Layer protocollo</div></div>
-    <div class="hero-stat"><div class="num">21</div><div class="lbl">Moduli Python</div></div>
-    <div class="hero-stat"><div class="num">52</div><div class="lbl">Test pytest</div></div>
-    <div class="hero-stat"><div class="num">9.5</div><div class="lbl">Score /10</div></div>
-  </div>
 </div>
 
 <!-- ═══════════════ TOC ═══════════════ -->
@@ -295,25 +289,58 @@ svg text{font-family:'JetBrains Mono',monospace}
 <h2 id="sec1"><span class="sec-num">1</span> Cos'è ATP</h2>
 
 <div class="card">
-<h3><span class="dot cyan"></span> Il problema</h3>
+<h3><span class="dot cyan"></span> Un protocollo di identità e cooperazione, non solo di trasporto</h3>
 <p>
-Due agenti software autonomi — su due macchine diverse, forse su due continenti diversi — vogliono comunicare in modo sicuro. Non si fidano l'uno dell'altro <em>a priori</em>. Non condividono un server centrale, non hanno un'autorità di certificazione comune, e non possono assumere che la rete sia trusted.
+ATP non è un semplice protocollo di trasporto come HTTP, WebSocket o MQTT. È un <strong>protocollo di identità e cooperazione</strong> progettato specificamente per agenti autonomi. La domanda fondamentale che ATP risponde è: <em>"Come fa un agente software a fidarsi di un altro agente che non ha mai incontrato prima, su una rete che non controlla?"</em>
 </p>
 <br>
 <p>
-<strong>ATP risolve questo problema</strong> fornendo un canale cifrato, verificabile e federato dove ogni agente possiede una identità autocertificata e ogni messaggio è firmato. <em>Zero server centrale, zero intermediari, zero configurazione di rete.</em>
+Per rispondere, ATP implementa un <strong>sistema completo di identità distribuita</strong> basato su Merkle-Claim Card (MCC). Ogni agente possiede un documento di identità crittografico autocertificato — firmato da un'autorità di fiducia — che contiene le sue chiavi pubbliche e i suoi attributi. Questo documento è un albero di Merkle: ogni attributo (chiave pubblica X25519 per ECDH, chiave Ed25519 per firme, nome, scadenza) è una foglia dell'albero, e la radice è firmata dall'autorità. Il risultato: un'identità <strong>verificabile, selettiva (si può provare un singolo attributo senza rivelare gli altri), e completamente decentralizzata</strong>.
+</p>
+<br>
+<p>
+Ma un'identità da sola non basta. ATP implementa un <strong>handshake a 5 fasi</strong> che combina TLS 1.3 mutual, negoziazione versione, scambio identità con proof-of-possession (nonce challenge + firma Ed25519), e scambio di capacità. Alla fine dell'handshake, entrambi i lati hanno dimostrato crittograficamente chi sono, hanno derivato una chiave E2E condivisa (X25519 ECDH + BLAKE3 KDF), e hanno stabilito un canale cifrato a due strati (TLS + E2E).
+</p>
+<br>
+<p>
+Dopo l'handshake, ATP fornisce un <strong>sistema completo per la cooperazione</strong>: multiplexing di task concorrenti su una singola connessione, streaming di risposte parziali, keepalive, health check, revoca distribuita via CuckooFilter + gossip Ed25519-signed, sincronizzazione del RootStore tra peer (chain-of-manifests firmati dall'agente), e federazione tra istanze con peer discovery, heartbeat e task forwarding con TTL. Ogni frame è CBOR canonico, ogni payload E2E cifrato con encrypt-then-sign (AES-256-GCM + Ed25519).
 </p>
 </div>
 
 <div class="card">
-<h3><span class="dot emerald"></span> Le parole chiave</h3>
+<h3><span class="dot emerald"></span> Cosa garantisce ATP — le 5 proprietà fondamentali</h3>
 <ul>
-<li><strong>MCC</strong> — Merkle-Claim Card: documento d'identità crittografico autocertificato. Come un passaporto, ma senza un governo che lo emette.</li>
-<li><strong>Handshake 5 fasi</strong> — TLS → Version → MCC → Proof-of-Possession → Capability. Due agenti si identificano, si verificano e concordano le capacità.</li>
-<li><strong>E2E Encryption</strong> — X25519 ECDH + AES-256-GCM + Ed25519 firma. Anche se il TLS viene violato, il payload rimane cifrato e autenticato.</li>
-<li><strong>CuckooFilter</strong> — Struttura dati per revoca distribuita. Un agente compromesso viene revocato e la revoca si propaga a tutti i peer via gossip.</li>
-<li><strong>RootStore</strong> — Registro distribuito di autorità fidate. Ogni agente ha un RootStore locale che viene sincronizzato con i peer.</li>
+<li><strong>Autenticazione forte</strong> — ogni agente è identificato da un MCC firmato da un'autorità nel RootStore. L'handshake include proof-of-possession: l'agente dimostra di possedere la chiave privata corrispondente alla chiave pubblica nell'MCC.</li>
+<li><strong>Crittografia end-to-end</strong> — due strati indipendenti: TLS 1.3 (trasporto) + X25519 ECDH + AES-256-GCM (payload). Anche se il TLS viene violato (es. CA compromessa), il payload rimane cifrato. Encrypt-then-sign garantisce autenticità e integrità.</li>
+<li><strong>Non-ripudio</strong> — ogni task e ogni frame di controllo è firmato Ed25519. Un agente non può negare di aver inviato un task. La firma è verificabile da terze parti.</li>
+<li><strong>Revoca distribuita</strong> — un agente compromesso viene revocato inserendo il suo seriale in un CuckooFilter. La revoca si propaga a tutti i peer via gossip Ed25519-signed. Nessun server centrale di revoca, nessun CRL da scaricare.</li>
+<li><strong>Federazione senza confini</strong> — 3+ nodi possono formare una rete mesh con peer discovery automatico (gossip ogni 60s, fanout 3), heartbeat (15s), e task forwarding con TTL (max 5 hop). Ogni frame federato è firmato con la chiave Ed25519 dell'agente forwarding.</li>
 </ul>
+</div>
+
+<div class="card">
+<h3><span class="dot violet"></span> Lo stack a 5 strati</h3>
+<p>
+ATP è organizzato come una pila di 5 strati indipendenti, ciascuno con responsabilità ben definite:
+</p>
+<ul>
+<li><strong>Transport Layer</strong> (TCP+TLS 1.3 o QUIC RFC 9000): connessione cifrata, 4-byte length prefix + CBOR canonico. HandshakeRateLimiter (10 tentativi/60s per IP).</li>
+<li><strong>Handshake Layer</strong> (5 fasi): TLS mutual → Version negotiation (0x30-0x31) → MCC exchange + proof-of-possession (0x40-0x42) → Capability exchange (0x50). Deadline 30s. Anti-replay 20s sliding window.</li>
+<li><strong>Control Layer</strong> (SHUTDOWN, REVOKE_NOTIFY, HEALTH, PING/PONG, ROOT_STORE_UPDATE): frame di controllo per la gestione della connessione e la sincronizzazione dello stato.</li>
+<li><strong>E2E Crypto Layer</strong>: X25519 ECDH + BLAKE3 KDF (domain separated) + AES-256-GCM. Encrypt-then-sign con Ed25519. Ogni chunk di streaming è cifrato individualmente.</li>
+<li><strong>Task Layer</strong>: multiplexing per task_id (asyncio.Future), streaming (partial=true + sequence), fire-and-forget DeepSeek, circuit breaker (5 errori → OPEN).</li>
+</ul>
+</div>
+
+<div class="card">
+<h3><span class="dot orange"></span> Una rete di fiducia, non una topologia</h3>
+<p>
+A differenza di HTTP/REST (client-server), MQTT (broker centrale), o gRPC (dipende da DNS/CA), ATP non impone una topologia di rete. Due agenti possono parlare direttamente (<strong>peer-to-peer</strong>), oppure attraverso la federazione (<strong>mesh</strong>), oppure in pipeline (<strong>catena</strong>). La rete è definita dal RootStore: ogni agente decide di quali autorità fidarsi, e di conseguenza con quali agenti interagire. Non esiste un concetto di "server centrale" o "autorità di certificazione globale". Ogni agente porta con sé la propria catena di fiducia.
+</p>
+<br>
+<p>
+Questo design rende ATP naturalmente adatto a scenari dove non esiste un'autorità centrale: reti di ricerca indipendenti, collaborazioni temporanee tra organizzazioni, IoT distribuito, e comunicazione tra agenti AI di diversi fornitori.
+</p>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
