@@ -1017,20 +1017,14 @@ class ATPAgent:
         """Call the DeepSeek chat API with *prompt*.
         
         Returns None if the API key is not configured or the call fails.
+        Circuit breaker is managed by the caller.
         """
+        from production import deepseek_circuit
+
         api_key = get_deepseek_api_key()
         if not api_key:
             logger.error("DeepSeek API key missing — cannot call API")
-            if monitor:
-                monitor.add_event(DEEPSEEK_CALL_START, {
-                    "conn_id": conn_id,
-                    "prompt_preview": prompt[:80],
-                })
-                monitor.add_event(DEEPSEEK_CALL_END, {
-                    "conn_id": conn_id,
-                    "success": False,
-                    "error": "API key not configured",
-                })
+            deepseek_circuit.record_failure()
             return None
 
         if monitor:
@@ -1079,6 +1073,7 @@ class ATPAgent:
                     "conn_id": conn_id,
                     "error": str(exc),
                 })
+            deepseek_circuit.record_failure()
             return None
 
     # ══════════════════════════════════════════════════════════════════════

@@ -21,6 +21,17 @@ STREAM_CLOSE_TIMEOUT_MS     = 5_000
 GRACE_PERIOD_S              = 300
 HANDSHAKE_TIMEOUT_S         = 30                     # max handshake duration
 
+# ── Production ────────────────────────────────────────────────────────────────
+MAX_CONCURRENT_CONNS        = 100    # max connessioni simultanee
+DRAIN_TIMEOUT_S             = 15     # tempo massimo per drain durante shutdown
+HEALTH_CHECK_PORT           = 8080   # porta HTTP per /health e /ready
+CIRCUIT_BREAKER_THRESHOLD   = 5      # errori consecutivi prima di aprire circuito
+CIRCUIT_BREAKER_RESET_S     = 30     # secondi prima di half-open
+RETRY_MAX_ATTEMPTS          = 3      # max tentativi per DeepSeek
+RETRY_BACKOFF_BASE_S        = 1.0    # base exponential backoff
+RETRY_BACKOFF_MAX_S         = 8.0    # cap backoff
+LOG_FORMAT                  = "json"  # "json" o "text"
+
 # ── Gossip (peer-to-peer revocation exchange) ─────────────────────────────────
 GOSSIP_INTERVAL_S = 5
 GOSSIP_FANOUT     = 3
