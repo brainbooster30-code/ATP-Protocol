@@ -197,6 +197,11 @@ def _sign_cert(ca_cert_pem: bytes, ca_key_pem: bytes, cn: str) -> tuple[bytes, b
     return cert_pem, key_pem
 
 
+# ── CA persistence path ─────────────────────────────────────────
+_CA_DIR = os.path.join(os.path.expanduser("~"), ".atp")
+_CA_CERT_PATH = os.path.join(_CA_DIR, "ca_cert.pem")
+_CA_KEY_PATH = os.path.join(_CA_DIR, "ca_key.pem")
+
 # ── cache per process ────────────────────────────────────────────────
 _ca_cert_pem: Optional[bytes] = None
 _ca_key_pem: Optional[bytes] = None
@@ -206,10 +211,41 @@ _cert_cn: str = ""
 
 
 def _ensure_ca() -> tuple[bytes, bytes]:
-    """Get or create the shared CA cert+key."""
+    """Get or create the shared CA cert+key.
+
+    Persists to ~/.atp/ so that multiple server instances on the
+    same machine (or a shared filesystem) share the same CA.
+    """
     global _ca_cert_pem, _ca_key_pem
-    if _ca_cert_pem is None:
+    if _ca_cert_pem is not None:
+        return _ca_cert_pem, _ca_key_pem
+
+    # Try loading from persistent storage first
+    loaded = False
+    if os.path.isfile(_CA_CERT_PATH) and os.path.isfile(_CA_KEY_PATH):
+        try:
+            with open(_CA_CERT_PATH, "rb") as f:
+                _ca_cert_pem = f.read()
+            with open(_CA_KEY_PATH, "rb") as f:
+                _ca_key_pem = f.read()
+            loaded = True
+            logger.info("CA loaded from %s", _CA_DIR)
+        except Exception as exc:
+            logger.warning("CA load failed: %s — regenerating", exc)
+
+    if not loaded:
         _ca_cert_pem, _ca_key_pem = _generate_ca_cert()
+        # Persist for future starts
+        try:
+            os.makedirs(_CA_DIR, exist_ok=True)
+            with open(_CA_CERT_PATH, "wb") as f:
+                f.write(_ca_cert_pem)
+            with open(_CA_KEY_PATH, "wb") as f:
+                f.write(_ca_key_pem)
+            logger.info("CA generated and persisted to %s", _CA_DIR)
+        except Exception as exc:
+            logger.warning("CA persist failed: %s (in-memory only)", exc)
+
     return _ca_cert_pem, _ca_key_pem
 
 
@@ -310,8 +346,17 @@ def make_ssl_context(
     
     Both sides share the same CA. Server uses CERT_REQUIRED,
     client uses CERT_REQUIRED + presents its own cert.
+
+    Cert PEM files are written to a dedicated temp directory that
+    is cleaned up at process exit via atexit.
     """
-    import ssl, tempfile
+    import ssl, tempfile, atexit, shutil
+
+    # One temp dir per process for all cert PEM files
+    if not hasattr(make_ssl_context, "_cert_dir"):
+        make_ssl_context._cert_dir = tempfile.mkdtemp(prefix="atp-certs-")
+        atexit.register(shutil.rmtree, make_ssl_context._cert_dir, ignore_errors=True)
+
     cert_pem, key_pem = get_self_signed_cert(cn=cn)
     ca_cert_pem = get_ca_cert_pem()
 
@@ -319,19 +364,17 @@ def make_ssl_context(
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_REQUIRED
 
-    # Write cert+key to temp files
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pem") as cf:
+    # Write cert+key to persistent temp files (SSLContext reads them at load time)
+    cert_path = os.path.join(make_ssl_context._cert_dir, f"cert-{cn}.pem")
+    key_path = os.path.join(make_ssl_context._cert_dir, f"key-{cn}.pem")
+    ca_path = os.path.join(make_ssl_context._cert_dir, "ca.pem")
+    with open(cert_path, "wb") as cf:
         cf.write(cert_pem)
-        cert_path = cf.name
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pem") as kf:
+    with open(key_path, "wb") as kf:
         kf.write(key_pem)
-        key_path = kf.name
-    ctx.load_cert_chain(cert_path, key_path)
-
-    # Write CA cert to temp file
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pem") as caf:
+    with open(ca_path, "wb") as caf:
         caf.write(ca_cert_pem)
-        ca_path = caf.name
+    ctx.load_cert_chain(cert_path, key_path)
     ctx.load_verify_locations(ca_path)
     return ctx
 
@@ -386,6 +429,9 @@ class ATPAgent:
         self._peer_ed25519_pk: Optional[bytes] = None
         self._root_store_pushed: bool = False
 
+        # Buffered frame reader (higher throughput, fewer syscalls)
+        self._buffered_reader: Optional[BufferedFrameReader] = None
+
 
         # Register agent identity in monitor
         if self.monitor:
@@ -414,7 +460,12 @@ class ATPAgent:
         self._writer = writer
         self._conn_id = uuid.uuid4().hex[:12]
 
-        from config import HANDSHAKE_TIMEOUT_S
+        from config import HANDSHAKE_TIMEOUT_S, USE_BUFFERED_READER
+
+        # Wrap reader in buffered reader for higher throughput
+        if USE_BUFFERED_READER and not self._buffered_reader:
+            from atp_core import BufferedFrameReader
+            self._buffered_reader = BufferedFrameReader(reader)
 
         if self.monitor:
             self.monitor.add_event(CONNECTION_OPEN, {
@@ -761,30 +812,80 @@ class ATPAgent:
                         "serials_count": count,
                     })
             elif ft == 0x21:
-                """ROOT_STORE_UPDATE — receive a signed root store manifest from peer."""
+                """ROOT_STORE_UPDATE — receive a signed root store manifest from peer.
+
+                Two verification paths:
+                1. Agent-signed (preferred): verify with peer's Ed25519 key from MCC
+                2. Authority-signed (legacy): verify via chain_add with RootStore authority lookup
+                """
                 signed_manifest = frame.get("signed_manifest", b"")
-                if signed_manifest:
-                    from revocation import get_root_store
-                    rs = get_root_store()
+                if not signed_manifest:
+                    return
+                from revocation import get_root_store
+                rs = get_root_store()
+                # Try agent-signed path first (ATP v1.8+)
+                if self._peer_ed25519_pk:
+                    import cbor2 as _cbor2
+                    from atp_core import ed25519_verify as _ed25519_verify
+                    try:
+                        manifest = _cbor2.loads(signed_manifest)
+                        sig = manifest.pop("signature", b"")
+                        if len(sig) != 64:
+                            raise ValueError("bad signature length")
+                        payload = _cbor2.dumps(manifest, canonical=True)
+                        if not _ed25519_verify(self._peer_ed25519_pk, sig, payload):
+                            logger.warning("RootStore update rejected (bad agent signature)")
+                            return
+                        count = 0
+                        for entry in manifest.get("authorities", []):
+                            rs.add_authority(entry["authority_id"], entry["pk"])
+                            count += 1
+                        logger.info("RootStore updated via agent-signed manifest from %s (%d authorities)",
+                                    manifest.get("sender_name", "?"), count)
+                    except Exception as exc:
+                        logger.warning("RootStore update error: %s", exc)
+                else:
+                    # Legacy path: verify via chain_add with authority key lookup
                     if rs.chain_add(signed_manifest):
-                        logger.info("RootStore updated via ROOT_STORE_UPDATE")
-                        if self.monitor:
-                            self.monitor.add_event("ROOT_STORE_UPDATE", {
-                                "conn_id": self._conn_id,
-                                "status": "accepted",
-                            })
+                        logger.info("RootStore updated via chain_add (legacy)")
                     else:
-                        logger.warning("RootStore update rejected (bad signature)")
+                        logger.warning("RootStore update rejected (legacy chain_add)")
             # Federation handlers (v2.0)
             elif ft == 0x60:
-                """PEER_DISCOVERY — receive peer list from federated peer."""
+                """PEER_DISCOVERY — receive peer list from federated peer.
+                Verifies the Ed25519 signature before updating routing table.
+                """
                 peers = frame.get("peers", [])
                 peer_node_id = frame.get("node_id", "")
-                if peers:
-                    from federation import FederationRouter, PeerRecord
-                    if not hasattr(self, "_fed_router"):
-                        self._fed_router = None  # set by ATPServer
-                    if self._fed_router:
+                peer_sig = frame.get("signature", b"")
+                if not peers:
+                    return
+                # Verify signature using peer's Ed25519 key from their MCC
+                peer_sign_pk = None
+                if self.peer_mcc:
+                    for leaf in self.peer_mcc.leaves:
+                        if leaf.key == "agent_sign_pk":
+                            peer_sign_pk = leaf.value
+                            break
+                if peer_sign_pk and peer_sig:
+                    import cbor2 as _cbor2
+                    from atp_core import ed25519_verify
+                    expected_payload = _cbor2.dumps(
+                        {"node_id": peer_node_id, "peers": peers},
+                        canonical=True,
+                    )
+                    if not ed25519_verify(peer_sign_pk, peer_sig, expected_payload):
+                        logger.warning("PEER_DISCOVERY: bad signature from %s — ignoring",
+                                       peer_node_id[:16])
+                        return
+                elif peer_sig:
+                    logger.warning("PEER_DISCOVERY: signature present but no peer Ed25519 key — ignoring")
+                    return
+                # No signature → accept (backward compat during migration)
+                from federation import FederationRouter, PeerRecord
+                if not hasattr(self, "_fed_router"):
+                    self._fed_router = None  # set by ATPServer
+                if self._fed_router:
                         for p in peers[:10]:
                             if p.get("peer_id") == self._fed_router.node_id:
                                 continue
@@ -811,12 +912,40 @@ class ATPAgent:
                         if peer_id in self._fed_router._peers:
                             self._fed_router._peers[peer_id].last_seen = time.time()
             elif ft == 0x62:
-                """TASK_FORWARD — forward a task through the federation."""
+                """TASK_FORWARD — forward a task through the federation.
+                Verifies the Ed25519 signature before accepting.
+                """
                 inner_task = frame.get("task_frame", {})
                 target = frame.get("target_peer_id", "")
                 ttl = frame.get("ttl", 5)
+                fwd_sig = frame.get("signature", b"")
+                fwd_id = frame.get("forwarder_id", "")
                 if ttl <= 0:
                     return  # TTL exhausted
+                # Verify signature using connected peer's Ed25519 key from MCC
+                peer_sign_pk = None
+                if self.peer_mcc:
+                    for leaf in self.peer_mcc.leaves:
+                        if leaf.key == "agent_sign_pk":
+                            peer_sign_pk = leaf.value
+                            break
+                if peer_sign_pk and fwd_sig:
+                    import cbor2 as _cbor2
+                    from atp_core import ed25519_verify
+                    expected = _cbor2.dumps({
+                        "target_peer_id": target,
+                        "ttl": ttl,
+                        "task_frame": inner_task,
+                        "forwarder_id": fwd_id,
+                    }, canonical=True)
+                    if not ed25519_verify(peer_sign_pk, fwd_sig, expected):
+                        logger.warning("TASK_FORWARD: bad signature from %s — dropping",
+                                       fwd_id[:16])
+                        return
+                elif fwd_sig:
+                    logger.warning("TASK_FORWARD: signature present but no peer Ed25519 key — dropping")
+                    return
+                # No signature → accept (backward compat during migration)
                 # Re-forward if we're not the target
                 if hasattr(self, "_fed_router") and self._fed_router:
                     if target and target != self._fed_router.node_id:
@@ -854,13 +983,35 @@ class ATPAgent:
             elif ft == 0x16:
                 self._last_peer_activity = time.time()
             elif ft == 0x21:
-                """ROOT_STORE_UPDATE received on client side."""
+                """ROOT_STORE_UPDATE received on client side.
+                Verify with peer's Ed25519 key from MCC (or legacy chain_add).
+                """
                 signed_manifest = frame.get("signed_manifest", b"")
-                if signed_manifest:
-                    from revocation import get_root_store
-                    rs = get_root_store()
+                if not signed_manifest:
+                    return
+                from revocation import get_root_store
+                rs = get_root_store()
+                if self._peer_ed25519_pk:
+                    import cbor2 as _cbor2
+                    from atp_core import ed25519_verify as _ed25519_verify
+                    try:
+                        manifest = _cbor2.loads(signed_manifest)
+                        sig = manifest.pop("signature", b"")
+                        if len(sig) != 64:
+                            raise ValueError("bad signature length")
+                        payload = _cbor2.dumps(manifest, canonical=True)
+                        if not _ed25519_verify(self._peer_ed25519_pk, sig, payload):
+                            logger.warning("Client RootStore update rejected (bad agent signature)")
+                            return
+                        for entry in manifest.get("authorities", []):
+                            rs.add_authority(entry["authority_id"], entry["pk"])
+                        logger.info("Client RootStore updated via agent-signed manifest from %s",
+                                    manifest.get("sender_name", "?"))
+                    except Exception as exc:
+                        logger.warning("Client RootStore update error: %s", exc)
+                else:
                     if rs.chain_add(signed_manifest):
-                        logger.info("Client RootStore updated via ROOT_STORE_UPDATE")
+                        logger.info("Client RootStore updated via chain_add (legacy)")
             elif ft == 0x20:
                 logger.warning("Received ERROR frame: %s", frame.get("error_message"))
 
@@ -1042,6 +1193,10 @@ class ATPAgent:
         manifest = rs.manifest
         if not manifest.get("authorities"):
             return
+        # Build a manifest listing our known authorities.
+        # The manifest is signed with OUR Ed25519 key (the agent's identity key),
+        # NOT the shared authority key.  The receiver verifies using our
+        # Ed25519 public key from the MCC exchanged during handshake.
         manifest_data = {
             "manifest_version": 1,
             "manifest_id": os.urandom(16),
@@ -1049,33 +1204,16 @@ class ATPAgent:
             "manifest_ts": int(time.time()),       # freshness window
             "rootstore_version": rs._version,      # monotonic counter
             "timestamp": int(time.time()),
-            "authority_id": self.identity.agent_name,
+            "sender_name": self.identity.agent_name,
             "authorities": [
                 {"authority_id": aid, "pk": info["pk"]}
                 for aid, info in manifest["authorities"].items()
             ],
         }
-        # Ensure the signing authority's own pk is in the manifest
-        own = self.identity.ed25519_pk
-        if not any(a["authority_id"] == manifest_data["authority_id"]
-                   for a in manifest_data["authorities"]):
-            manifest_data["authorities"].append({
-                "authority_id": manifest_data["authority_id"],
-                "pk": own,
-            })
-        # Debug: verify keypair consistency
-        from atp_core import ed25519_verify as _ed25519_verify
-        _dbg_payload = _cbor2.dumps(manifest_data, canonical=True)
-        _dbg_sig = ed25519_sign(self.identity.ed25519_sk, _dbg_payload)
-        if not _ed25519_verify(own, _dbg_sig, _dbg_payload):
-            logger.error("BUG: agent %s own ed25519 keypair is inconsistent!",
-                         self.identity.agent_name)
         payload = _cbor2.dumps(manifest_data, canonical=True)
         sig = ed25519_sign(self.identity.ed25519_sk, payload)
-        logger.debug("ROOTSTORE_PUSH: %s payload=%dB sig=%dB key=%s... "
-                     "payload_hex=%s",
-                     self.identity.agent_name, len(payload), len(sig), own.hex()[:16],
-                     payload.hex()[:64])
+        logger.debug("ROOTSTORE_PUSH: sender=%s payload=%dB sig=%dB",
+                     self.identity.agent_name, len(payload), len(sig))
         manifest_data["signature"] = sig
         signed = _cbor2.dumps(manifest_data, canonical=True)
         frame = {
@@ -1595,27 +1733,60 @@ class ATPAgent:
     # ══════════════════════════════════════════════════════════════════════
 
     async def _forward_task_to_peer(self, task_frame: dict, target: str, ttl: int):
-        """Forward a task to the next hop in the federation (v2.0)."""
+        """Forward a task to the next hop in the federation (v2.0).
+
+        Opens a NEW outbound connection to the target peer, sends the
+        TASK_FORWARD frame, and returns the connection to the pool.
+        The pool reuses connections across forwards, reducing handshake
+        overhead.
+
+        Each TASK_FORWARD frame is Ed25519-signed by the forwarder so
+        the receiver can verify authenticity using the forwarder's MCC.
+        """
         if not hasattr(self, "_fed_router") or not self._fed_router:
             return
-        if not self._writer:
-            return
         try:
-            live = await self._fed_router.get_live_peers()
-            target_peer = None
-            for p in live:
-                if p.peer_id == target:
-                    target_peer = p
-                    break
-            if target_peer or live:
+            # Use the router's lookup (avoids duplicating the routing logic)
+            fwd_task = {"target_peer_id": target}
+            target_peer = await self._fed_router.forward_task(fwd_task, ttl)
+            if not target_peer:
+                logger.warning("Federation: target peer %s not in routing table", target[:16])
+                return
+            # Get a pooled outbound connection to the target peer
+            proxy = await self._fed_router.get_outbound_connection(
+                target_peer.host, target_peer.port,
+            )
+            if proxy is None:
+                logger.warning("Federation: cannot connect to target %s at %s:%s",
+                               target[:16], target_peer.host, target_peer.port)
+                return
+            try:
+                # Sign the forward with our Ed25519 key for authenticity
+                import cbor2 as _cbor2
+                from atp_core import ed25519_sign
+                fwd_payload = _cbor2.dumps({
+                    "target_peer_id": target,
+                    "ttl": ttl,
+                    "task_frame": task_frame,
+                    "forwarder_id": self.identity.agent_name,
+                }, canonical=True)
+                fwd_sig = ed25519_sign(self.identity.ed25519_sk, fwd_payload)
                 fwd = {
                     "header": build_header(0x62),
                     "target_peer_id": target,
                     "ttl": ttl,
                     "task_frame": task_frame,
+                    "signature": fwd_sig,
+                    "forwarder_id": self.identity.agent_name,
                 }
-                await self._send_frame(fwd)
-                logger.info("Federation: forwarded task to %s (ttl=%d)", target[:16], ttl)
+                await proxy.agent._send_frame(fwd)
+                logger.info("Federation: forwarded signed task to %s at %s:%s (ttl=%d)",
+                            target[:16], target_peer.host, target_peer.port, ttl)
+            finally:
+                # Return to pool (not disconnect)
+                await self._fed_router.return_connection(
+                    target_peer.host, target_peer.port,
+                )
         except Exception as exc:
             logger.debug("Federation: forward failed — %s", exc)
 
@@ -1635,9 +1806,16 @@ class ATPAgent:
         await send_frame(self._writer, payload)
 
     async def _read_frame(self) -> Optional[dict]:
-        """Read a frame and log the event. Applies anti-replay and clock skew checks."""
+        """Read a frame and log the event. Applies anti-replay and clock skew checks.
+
+        Uses BufferedFrameReader when available (higher throughput),
+        falls back to decode_frame for backward compat.
+        """
         try:
-            frame = await decode_frame(self._reader)
+            if self._buffered_reader:
+                frame = await self._buffered_reader.read_frame()
+            else:
+                frame = await decode_frame(self._reader)
         except Exception:
             return None
 

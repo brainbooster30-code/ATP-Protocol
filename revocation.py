@@ -237,8 +237,16 @@ class RootStore:
 
     def add_authority(self, authority_id: str, public_key: bytes,
                       ttl_seconds: int = 86400 * 365) -> bool:
-        """Add or update a trusted authority."""
+        """Add or update a trusted authority.
+
+        Idempotent: if the authority already exists with the *same* public key,
+        the version counter is NOT incremented and no save is triggered.
+        """
         with self._lock:
+            existing = self._manifest['authorities'].get(authority_id)
+            if existing and existing['pk'] == public_key:
+                # Already registered with the same key — no-op
+                return True
             self._manifest['authorities'][authority_id] = {
                 'pk': public_key,
                 'added': int(time.time()),
@@ -255,7 +263,7 @@ class RootStore:
             entry = self._manifest["authorities"].get(authority_id)
             if entry is None:
                 return None
-            if entry["expires"] < int(time.time()):
+            if entry["expires"] <= int(time.time()):
                 logger.warning("RootStore: authority %s expired", authority_id)
                 return None
             return entry["pk"]
@@ -308,16 +316,20 @@ class RootStore:
                     if len(self._seen_nonces) > 10_000:
                         self._seen_nonces.clear()
 
-            # Version check: reject stale manifests (version <= latest known)
+            # Version check: reject stale manifests
+            # NOTE: allow equal version (same RootStore state pushed by
+            # different agents/sessions) — anti-replay is handled by
+            # manifest_nonce and 300s freshness window above.
             manifest_version = manifest.get("rootstore_version", 0)
             if manifest_version:
                 with self._lock:
                     latest = self._manifest_ts_latest.get(signer_id_pre, 0)
-                    if manifest_version <= latest:
-                        logger.warning("Chain: stale manifest version %d <= %d for %s",
+                    if manifest_version < latest:
+                        logger.warning("Chain: stale manifest version %d < %d for %s",
                                        manifest_version, latest, signer_id_pre)
                         return False
-                    self._manifest_ts_latest[signer_id_pre] = manifest_version
+                    if manifest_version > latest:
+                        self._manifest_ts_latest[signer_id_pre] = manifest_version
 
             # Find the signing authority — first try RootStore, then bootstrap
             signer_id = manifest.get("authority_id", "")
@@ -430,10 +442,12 @@ class DegradationPolicy:
 class GossipPeer:
     """Represents one gossip peer with its known revocation set."""
 
-    def __init__(self, peer_id: str, host: str, gossip_port: int):
+    def __init__(self, peer_id: str, host: str, gossip_port: int,
+                 ed25519_pk: bytes = b""):
         self.peer_id = peer_id
         self.host = host
         self.gossip_port = gossip_port
+        self.ed25519_pk = ed25519_pk      # public key for signature verification
         self.known_serials: set[bytes] = set()
         self.last_sync: float = 0.0
 
@@ -448,17 +462,36 @@ class GossipProtocol:
     in a future version).
     """
 
-    def __init__(self, node_id: str, monitor=None):
+    def __init__(self, node_id: str, monitor=None, signing_sk: Optional[bytes] = None):
         self.node_id = node_id
         self.monitor = monitor
         self._peers: dict[str, GossipPeer] = {}
         self._lock = asyncio.Lock()
         self._revoked_serials: set[bytes] = set()
+        # Ed25519 signing key for authenticating gossip payloads.
+        # If None, gossip is sent unsigned (backward compat during migration).
+        if signing_sk is None:
+            # Auto-generate a keypair if none provided
+            from atp_core import generate_ed25519_keypair
+            sk, pk = generate_ed25519_keypair()
+            self._sign_sk: bytes = sk
+            self._sign_pk: bytes = pk
+        else:
+            self._sign_sk: bytes = signing_sk
+            from cryptography.hazmat.primitives.asymmetric import ed25519 as _ed
+            from cryptography.hazmat.primitives import serialization as _ser
+            self._sign_pk: bytes = _ed.Ed25519PrivateKey.from_private_bytes(
+                signing_sk
+            ).public_key().public_bytes(
+                encoding=_ser.Encoding.Raw,
+                format=_ser.PublicFormat.Raw,
+            )
 
-    def add_peer(self, peer_id: str, host: str, gossip_port: int = 8444):
+    def add_peer(self, peer_id: str, host: str, gossip_port: int = 8444,
+                 ed25519_pk: bytes = b""):
         """Register a gossip peer."""
         if peer_id not in self._peers:
-            self._peers[peer_id] = GossipPeer(peer_id, host, gossip_port)
+            self._peers[peer_id] = GossipPeer(peer_id, host, gossip_port, ed25519_pk=ed25519_pk)
             logger.info("Gossip: added peer %s at %s:%s", peer_id, host, gossip_port)
 
     def remove_peer(self, peer_id: str):
@@ -476,9 +509,13 @@ class GossipProtocol:
     async def gossip_round(self):
         """
         Execute one gossip round: connect to fanout peers over TCP
-        and send revoked serials as CBOR-encoded list.
+        and send signed revoked serials as CBOR-encoded payload.
+
+        The payload is Ed25519-signed by the sender for authenticity.
+        Receivers verify the signature if the sender's Ed25519 key is known.
         """
         import asyncio, secrets, cbor2 as _cbor2
+        from atp_core import ed25519_sign
         peers = list(self._peers.values())
         if not peers or not self._revoked_serials:
             return
@@ -487,7 +524,16 @@ class GossipProtocol:
         targets = secrets.SystemRandom().sample(peers, fanout)
 
         serials_list = list(self._revoked_serials)
-        payload = _cbor2.dumps([s.hex() for s in serials_list])
+        # Build a signed payload: node_id + serials + public_key
+        gossip_payload = {
+            "node_id": self.node_id,
+            "serials": [s.hex() for s in serials_list],
+            "sender_pk": self._sign_pk.hex(),
+        }
+        payload_body = _cbor2.dumps(gossip_payload, canonical=True)
+        sig = ed25519_sign(self._sign_sk, payload_body)
+        gossip_payload["signature"] = sig.hex()  # hex for JSON-safe transport
+        payload = _cbor2.dumps(gossip_payload, canonical=True)
         logger.info("Gossip round: %d revoked serials → %d peers",
                      len(serials_list), fanout)
 
@@ -550,7 +596,12 @@ class GossipServer:
             await self._server.wait_closed()
 
     async def _on_gossip_connect(self, reader, writer):
-        """Handle an incoming gossip connection."""
+        """Handle an incoming gossip connection.
+
+        Supports two payload formats:
+        1. Signed dict (v2): {node_id, serials[], sender_pk, signature} -- preferred
+        2. Flat list (v1): [hex_serial, ...] -- backward compat
+        """
         peer = writer.get_extra_info("peername")
         try:
             raw_len = await asyncio.wait_for(reader.readexactly(4), timeout=5)
@@ -560,7 +611,39 @@ class GossipServer:
                 return
             data = await asyncio.wait_for(reader.readexactly(length), timeout=10)
             import cbor2 as _cbor2
-            serials_hex = _cbor2.loads(data)
+            from atp_core import ed25519_verify
+            payload = _cbor2.loads(data)
+
+            serials_hex: list = []
+
+            if isinstance(payload, dict):
+                # Signed format (v2): verify Ed25519 signature
+                sig_hex = payload.pop("signature", "")
+                sender_pk_hex = payload.get("sender_pk", "")
+                node_id = payload.get("node_id", "?")
+                serials_hex = payload.get("serials", [])
+                if sig_hex and sender_pk_hex:
+                    try:
+                        sig = bytes.fromhex(sig_hex)
+                        sender_pk = bytes.fromhex(sender_pk_hex)
+                        payload_body = _cbor2.dumps(payload, canonical=True)
+                        if not ed25519_verify(sender_pk, sig, payload_body):
+                            logger.warning("Gossip: bad signature from %s (%s) -- ignoring", node_id, peer)
+                            return
+                        logger.debug("Gossip: verified signature from %s", node_id)
+                    except (ValueError, Exception) as exc:
+                        logger.warning("Gossip: signature verification error from %s -- %s", peer, exc)
+                        return
+                else:
+                    # Unsigned dict -- accept during migration window
+                    logger.debug("Gossip: unsigned payload from %s (migration)", peer)
+            elif isinstance(payload, list):
+                # Legacy flat list format (v1)
+                serials_hex = payload
+            else:
+                logger.warning("Gossip: unknown payload type from %s", peer)
+                return
+
             count = 0
             for s_hex in serials_hex:
                 serial = bytes.fromhex(s_hex)
@@ -587,7 +670,7 @@ class GossipServer:
 
 _revocation_lock = threading.Lock()
 _default_cuckoo: Optional[CuckooFilter] = None
-_default_root_store: Optional[RootStore] = None
+_default_root_store: Optional[object] = None  # RootStore or RootStoreSQLite
 _default_gossip: Optional[GossipProtocol] = None
 _default_degradation: Optional[DegradationPolicy] = None
 
@@ -601,12 +684,29 @@ def get_cuckoo_filter() -> CuckooFilter:
     return _default_cuckoo
 
 
-def get_root_store() -> RootStore:
+def get_root_store() -> object:
+    """Get the global RootStore singleton.
+    
+    Backend is selected by ROOT_STORE_BACKEND in config.py:
+    - "json" (default) → RootStore (JSON flat file)
+    - "sqlite" → RootStoreSQLite (SQLite WAL mode)
+    """
     global _default_root_store
     if _default_root_store is None:
         with _revocation_lock:
             if _default_root_store is None:
-                _default_root_store = RootStore()
+                from config import ROOT_STORE_BACKEND
+                if ROOT_STORE_BACKEND == "sqlite":
+                    from revocation_sqlite import RootStoreSQLite
+                    path = os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)), "root_store.db"
+                    )
+                    _default_root_store = RootStoreSQLite(path=path)
+                    logger.info("RootStore backend: SQLite (%s)", path)
+                else:
+                    _default_root_store = RootStore()
+                    logger.info("RootStore backend: JSON (%s)",
+                                getattr(_default_root_store, '_persist_path', ''))
     return _default_root_store
 
 
