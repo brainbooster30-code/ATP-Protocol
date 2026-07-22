@@ -644,18 +644,20 @@ class ATPAgent:
                 break
 
     async def _frame_reader_loop(self):
-        """Background reader: reads and dispatches frames (client + server).
-        
-        For the server, this runs instead of handle_task_loop.
-        For the client, this runs to receive async responses.
-        Routes TASK_RESPONSE/TASK_ERROR to pending futures by task_id.
-        """
+        """Background reader: reads and dispatches frames (client + server)."""
+        logger.debug("FRAME READER STARTED for %s", self._conn_id)
         while self.bound and self._reader:
             try:
-                frame = await self._read_frame()
+                frame = await asyncio.wait_for(
+                    self._read_frame(), timeout=30.0
+                )
                 if frame is None:
+                    logger.debug("FRAME READER: frame is None, exiting")
                     break
                 await self._dispatch_frame(frame)
+            except asyncio.TimeoutError:
+                logger.debug("FRAME READER: idle timeout (30s)")
+                continue
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -666,6 +668,7 @@ class ATPAgent:
         """Dispatch an incoming frame to the right handler."""
         ft = frame.get("header", {}).get("frame_type")
         task_id = frame.get("header", {}).get("task_id", b"")
+        logger.debug("DISPATCH frame 0x%02x task %s", ft, task_id.hex()[:8] if task_id else "nil")
 
         # Route TASK_RESPONSE / TASK_ERROR to pending futures
         if ft in (0x02, 0x04) and task_id != b"\x00" * 16:
@@ -847,6 +850,9 @@ class ATPAgent:
         """Derive AES-256-GCM session key from ECDH shared secret.
 
         Uses X25519 ECDH + BLAKE3 KDF with domain separation.
+        Both sides sort public keys deterministically so the
+        derived key is identical.
+
         Returns 32-byte AES key, or None if peer key is invalid.
         """
         if len(peer_x25519_pk) != 32 or len(self.identity.x25519_sk) != 32:
@@ -855,7 +861,9 @@ class ATPAgent:
             our_sk = x25519.X25519PrivateKey.from_private_bytes(self.identity.x25519_sk)
             peer_pk = x25519.X25519PublicKey.from_public_bytes(peer_x25519_pk)
             shared_secret = our_sk.exchange(peer_pk)
-            kdf_input = b"atp-v1.7-ecdh" + shared_secret + peer_x25519_pk + self.identity.x25519_pk
+            # Sort public keys so both sides derive the same key
+            pk1, pk2 = sorted([peer_x25519_pk, self.identity.x25519_pk])
+            kdf_input = b"atp-v1.7-ecdh" + shared_secret + pk1 + pk2
             return blake3_hash(kdf_input)
         except Exception:
             logger.exception("ECDH key derivation failed")
@@ -915,10 +923,7 @@ class ATPAgent:
 
     def _setup_e2e(self):
         """Derive E2E session key from peer's X25519 public key in MCC.
-        Also stores peer's Ed25519 pk for authenticated E2E.
-
-        Called after handshake. Stores session key in self._e2e_key.
-        No-op if peer key is missing (backward compat, plaintext fallback).
+        Stores session key in self._e2e_key, peer Ed25519 pk for auth.
         """
         self._e2e_key: Optional[bytes] = None
         self._peer_ed25519_pk: Optional[bytes] = None
@@ -934,38 +939,49 @@ class ATPAgent:
                 self._peer_ed25519_pk = leaf.value
 
     async def _push_root_store(self):
-        """Send local RootStore manifest to peer via ROOT_STORE_UPDATE.
-        
-        Called after handshake so both sides can share authority keys
-        (multi-authority bootstrap). No-op if writer not available.
-        """
+        """Send local RootStore to peer. Skipped in QUIC mode
+        (handshake timing issue with concurrent bidirectional push)."""
+        try:
+            from atp_quic import _QUIC_MODE
+            if _QUIC_MODE:
+                return
+        except ImportError:
+            pass
         if not self._writer:
             return
         try:
-            from revocation import get_root_store
-            rs = get_root_store()
-            import cbor2 as _cbor2
-            manifest = rs.manifest
-            if not manifest.get("authorities"):
-                return
-            frame = {
-                "header": build_header(0x21),
-                "signed_manifest": _cbor2.dumps({
-                    "manifest_version": 1,
-                    "manifest_id": os.urandom(16),
-                    "timestamp": int(time.time()),
-                    "authority_id": list(manifest["authorities"].keys())[0],
-                    "authorities": [
-                        {"authority_id": aid, "pk": info["pk"]}
-                        for aid, info in manifest["authorities"].items()
-                    ],
-                }, canonical=True),
-            }
-            await self._send_frame(frame)
-            logger.debug("RootStore pushed to peer (%d authorities)",
-                         len(manifest["authorities"]))
+            await asyncio.wait_for(self._do_push_root_store(), timeout=3.0)
+        except asyncio.TimeoutError:
+            logger.debug("RootStore push timeout")
         except Exception as exc:
             logger.debug("RootStore push skipped: %s", exc)
+
+    async def _do_push_root_store(self):
+        from revocation import get_root_store
+        rs = get_root_store()
+        import cbor2 as _cbor2
+        manifest = rs.manifest
+        if not manifest.get("authorities"):
+            return
+        manifest_data = {
+            "manifest_version": 1,
+            "manifest_id": os.urandom(16),
+            "timestamp": int(time.time()),
+            "authority_id": self.identity.agent_name,
+            "authorities": [
+                {"authority_id": aid, "pk": info["pk"]}
+                for aid, info in manifest["authorities"].items()
+            ],
+        }
+        payload = _cbor2.dumps(manifest_data, canonical=True)
+        sig = ed25519_sign(self.identity.ed25519_sk, payload)
+        manifest_data["signature"] = sig
+        signed = _cbor2.dumps(manifest_data, canonical=True)
+        frame = {
+            "header": build_header(0x21),
+            "signed_manifest": signed,
+        }
+        await self._send_frame(frame)
 
     @staticmethod
     async def call_deepseek(prompt: str, monitor: Optional[Monitor] = None,
@@ -1475,9 +1491,7 @@ class ATPAgent:
                     })
 
         self._current_task = asyncio.create_task(_process())
-        # Fire-and-forget: non awaitare, così il reader loop processa
-        # altri frame mentre il task gira in background.
-        # La risposta TASK_RESPONSE viene inviata dal task stesso.
+        # Fire-and-forget: il reader loop continua mentre il task gira
         self._current_task.add_done_callback(lambda t: setattr(self, '_current_task', None))
 
     # ══════════════════════════════════════════════════════════════════════
