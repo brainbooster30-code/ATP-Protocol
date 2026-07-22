@@ -18,6 +18,7 @@ from cryptography import x509
 from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import x25519, ed25519
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.backends import default_backend
 
 import aiohttp
@@ -305,8 +306,9 @@ class ATPAgent:
         self._pending_lock = asyncio.Lock()
         self._frame_reader_task: Optional[asyncio.Task] = None
         self._keepalive_task: Optional[asyncio.Task] = None
-        self._keepalive_interval: float = 30.0  # seconds between PINGs
-        self._current_task: Optional[asyncio.Task] = None  # track for cancellation
+        self._keepalive_interval: float = 30.0
+        self._current_task: Optional[asyncio.Task] = None
+        self._e2e_key: Optional[bytes] = None
 
 
         # Register agent identity in monitor
@@ -422,7 +424,7 @@ class ATPAgent:
         req_frame = {
             "header": header,
             "task_type": task_type,
-            "task_payload": payload,
+            "task_payload": self._e2e_encrypt(payload, self._e2e_key) if self._e2e_key else payload,
             "deadline_ms": deadline_ms,
             "metadata": {"priority": priority},
             "priority_hint": priority,
@@ -487,6 +489,12 @@ class ATPAgent:
             sent_time = header["timestamp"]
             latency = int(time.time() * 1000) - sent_time
             result_bytes = resp.get("result_payload", b"")
+            if self._e2e_key:
+                decrypted = self._e2e_decrypt(result_bytes, self._e2e_key)
+                if decrypted is not None:
+                    result_bytes = decrypted
+                else:
+                    logger.warning("E2E decrypt failed for task %s response", task_id.hex()[:8])
             result_text = result_bytes.decode("utf-8", errors="replace")[:200]
             if self.monitor:
                 self.monitor.add_event(TASK_COMPLETE, {
@@ -702,7 +710,67 @@ class ATPAgent:
                 "agent": self.identity.agent_name,
             })
 
-    # ── DeepSeek API ─────────────────────────────────────────────────────
+    # ── E2E ECDH + AES-GCM ─────────────────────────────────────────
+
+    def _derive_session_key(self, peer_x25519_pk: bytes) -> Optional[bytes]:
+        """Derive AES-256-GCM session key from ECDH shared secret.
+
+        Uses X25519 ECDH + BLAKE3 KDF with domain separation.
+        Returns 32-byte AES key, or None if peer key is invalid.
+        """
+        if len(peer_x25519_pk) != 32 or len(self.identity.x25519_sk) != 32:
+            return None
+        try:
+            our_sk = x25519.X25519PrivateKey.from_private_bytes(self.identity.x25519_sk)
+            peer_pk = x25519.X25519PublicKey.from_public_bytes(peer_x25519_pk)
+            shared_secret = our_sk.exchange(peer_pk)
+            kdf_input = b"atp-v1.7-ecdh" + shared_secret + peer_x25519_pk + self.identity.x25519_pk
+            return blake3_hash(kdf_input)
+        except Exception:
+            logger.exception("ECDH key derivation failed")
+            return None
+
+    @staticmethod
+    def _e2e_encrypt(plaintext: bytes, session_key: bytes) -> bytes:
+        """Encrypt *plaintext* with AES-256-GCM using *session_key*.
+
+        Returns: 12-byte nonce || ciphertext || 16-byte tag
+        """
+        nonce = os.urandom(12)
+        aesgcm = AESGCM(session_key)
+        ciphertext = aesgcm.encrypt(nonce, plaintext, None)
+        return nonce + ciphertext
+
+    @staticmethod
+    def _e2e_decrypt(encrypted: bytes, session_key: bytes) -> Optional[bytes]:
+        """Decrypt AES-256-GCM payload. Returns plaintext or None."""
+        if len(encrypted) < 12 + 16:
+            return None
+        nonce = encrypted[:12]
+        ciphertext = encrypted[12:]
+        try:
+            aesgcm = AESGCM(session_key)
+            return aesgcm.decrypt(nonce, ciphertext, None)
+        except Exception:
+            logger.warning("E2E decryption failed (bad key/tampered data)")
+            return None
+
+    def _setup_e2e(self):
+        """Derive E2E session key from peer's X25519 public key in MCC.
+
+        Called after handshake. Stores session key in self._e2e_key.
+        No-op if peer key is missing (backward compat, plaintext fallback).
+        """
+        self._e2e_key: Optional[bytes] = None
+        if self.peer_mcc is None:
+            return
+        for leaf in self.peer_mcc.leaves:
+            if leaf.key == "agent_pk":
+                pk = self._derive_session_key(leaf.value)
+                if pk:
+                    self._e2e_key = pk
+                    logger.info("E2E ECDH session key derived (%s...)", pk.hex()[:8])
+                break
 
     @staticmethod
     async def call_deepseek(prompt: str, monitor: Optional[Monitor] = None,
@@ -921,6 +989,7 @@ class ATPAgent:
 
         # Phase 5 — ready for task streams
         self.bound = True
+        self._setup_e2e()
         # Start keepalive task
         self._keepalive_task = asyncio.create_task(self._keepalive_loop())
 
@@ -1030,6 +1099,7 @@ class ATPAgent:
             logger.info("Capability exchange complete: %s", cap_resp.get("capabilities"))
 
         self.bound = True
+        self._setup_e2e()
 
     # ══════════════════════════════════════════════════════════════════════
     #  Internal: task handling
@@ -1076,9 +1146,18 @@ class ATPAgent:
         # Process the task (track as _current_task for cancellation)
         async def _process():
             try:
-                result_bytes = task_payload  # default echo
+                # Decrypt incoming payload if E2E key is established
+                actual_payload = task_payload
+                if self._e2e_key:
+                    decrypted = self._e2e_decrypt(task_payload, self._e2e_key)
+                    if decrypted is not None:
+                        actual_payload = decrypted
+                    else:
+                        logger.warning("E2E decrypt failed for incoming task")
+
+                result_bytes = actual_payload  # default echo
                 if self.task_handler:
-                    result = await self.task_handler(frame)
+                    result = await self.task_handler({**frame, "task_payload": actual_payload})
                     if isinstance(result, dict):
                         result_bytes = json.dumps(result).encode("utf-8")
                     elif isinstance(result, bytes):
@@ -1086,7 +1165,7 @@ class ATPAgent:
                     else:
                         result_bytes = str(result).encode("utf-8")
                 elif task_type == "deepseek_chat":
-                    prompt = task_payload.decode("utf-8", errors="replace")
+                    prompt = actual_payload.decode("utf-8", errors="replace")
                     result_text = await self.call_deepseek(prompt, self.monitor, self._conn_id)
                     if result_text:
                         result = {"result": result_text}
@@ -1095,10 +1174,11 @@ class ATPAgent:
                     result_bytes = json.dumps(result).encode("utf-8")
 
                 resp_header = build_header(0x02, task_id_from_req)
+                encrypted_result = self._e2e_encrypt(result_bytes, self._e2e_key) if self._e2e_key else result_bytes
                 response = {
                     "header": resp_header,
                     "status": 0,
-                    "result_payload": result_bytes,
+                    "result_payload": encrypted_result,
                 }
                 await self._send_frame(response)
 

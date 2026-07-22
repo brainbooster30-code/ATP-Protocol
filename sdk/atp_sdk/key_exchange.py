@@ -126,6 +126,9 @@ async def connect_with_key_card(
     Connette a un agente ATP usando la sua Key Card.
     Nessun servizio esterno, nessuna configurazione di rete.
 
+    Dopo la connessione, verifica che l'MCC del peer
+    contenga la chiave pubblica Ed25519 presente nella card.
+
     Args:
         card_path: Percorso del file .card dell'altro agente
         timeout: Timeout di connessione in secondi
@@ -142,6 +145,19 @@ async def connect_with_key_card(
     if not ok:
         logger.error("Connessione a %s:%s fallita", peer["host"], peer["port"])
         return None
+
+    # Verify peer MCC matches Key Card Ed25519 public key
+    if client._agent and client._agent.peer_mcc:
+        card_ed25519_pk = peer["ed25519_pk"]  # bytes, 32
+        peer_leaves = {l.key: l.value for l in client._agent.peer_mcc.leaves}
+        mcc_ed25519_pk = peer_leaves.get("agent_sign_pk")
+        if mcc_ed25519_pk is None or mcc_ed25519_pk != card_ed25519_pk:
+            logger.error(
+                "Key Card mismatch: peer Ed25519 key differs from card"
+            )
+            await client.close()
+            return None
+        logger.info("Key Card verified: peer Ed25519 key matches card")
 
     logger.info("Connesso a %s (%s:%s)", peer["agent_name"], peer["host"], peer["port"])
     return client

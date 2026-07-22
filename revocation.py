@@ -254,13 +254,62 @@ class RootStore:
             return entry["pk"]
 
     def chain_add(self, signed_manifest: bytes) -> bool:
-        """Add a signed manifest to the chain for audit."""
-        with self._lock:
-            self._manifest["chain"].append({
-                "manifest": signed_manifest,
-                "added": int(time.time()),
-            })
+        """Add a signed manifest to the chain, verifying its signature.
+
+        The manifest should be a CBOR structure signed by an already-trusted
+        authority. Format:
+        {
+            "manifest_version": uint,
+            "manifest_id": bstr .size 16,
+            "prev_manifest_id": bstr .size 16,
+            "timestamp": uint,
+            "authority_id": tstr,
+            "authority_pk": bstr .size 32,
+            "quorum_threshold": uint,
+            "authorities": [{ "authority_id": tstr, "pk": bstr .size 32 }],
+            "signature": bstr .size 64
+        }
+
+        The signature is Ed25519 over all fields except 'signature'.
+        Returns True if accepted, False if verification fails.
+        """
+        try:
+            import cbor2 as _cbor2
+            manifest = _cbor2.loads(signed_manifest)
+            sig = manifest.pop("signature", b"")
+            if len(sig) != 64:
+                logger.warning("Chain: invalid signature length")
+                return False
+            # Re-serialize without signature for verification
+            payload = _cbor2.dumps(manifest, canonical=True)
+            # Find the signing authority
+            signer_id = manifest.get("authority_id", "")
+            with self._lock:
+                signer_pk_entry = self._manifest["authorities"].get(signer_id)
+                if signer_pk_entry is None:
+                    logger.warning("Chain: signing authority %s not in RootStore", signer_id)
+                    return False
+                signer_pk = signer_pk_entry["pk"]
+            # Verify signature
+            from atp_core import ed25519_verify
+            if not ed25519_verify(signer_pk, sig, payload):
+                logger.warning("Chain: bad signature on manifest from %s", signer_id)
+                return False
+            # Add new authorities from manifest
+            for entry in manifest.get("authorities", []):
+                self.add_authority(entry["authority_id"], entry["pk"])
+            with self._lock:
+                self._manifest["chain"].append({
+                    "manifest": signed_manifest,
+                    "added": int(time.time()),
+                })
+                self._save()
+            logger.info("Chain: added manifest from %s (%d authorities)",
+                        signer_id, len(manifest.get("authorities", [])))
             return True
+        except Exception as exc:
+            logger.warning("Chain: manifest verification error — %s", exc)
+            return False
 
     @property
     def manifest(self) -> dict:
