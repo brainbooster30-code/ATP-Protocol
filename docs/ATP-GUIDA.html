@@ -123,6 +123,142 @@ Due agenti software autonomi — su due macchine diverse, forse su due continent
 </div>
 
 <!-- ============================================================ -->
+<!-- 2.5. PERCHÉ ATP VS METODI TRADIZIONALI -->
+<!-- ============================================================ -->
+<h2>2.5. Perché ATP — confronto con i metodi tradizionali</h2>
+
+<div class="card">
+<h3><span class="dot cyan"></span> Il problema dei vecchi approcci</h3>
+<p>
+Prima di ATP, far comunicare due agenti software significava scegliere un compromesso tra
+<strong>semplicità</strong> e <strong>sicurezza</strong> — e spesso si perdeva su entrambi.
+</p>
+<br>
+<p><strong>HTTP/REST</strong> — Il più comune. Un agente chiama un'API, l'altro risponde.
+Sembra funzionare finché non ti accorgi che:</p>
+<ul>
+<li>Serve un server centrale (o almeno un indirizzo IP pubblico)</li>
+<li>L'autenticazione è demandata a JWT/API key — nessuna identità crittografica nativa</li>
+<li>Il payload viaggia in chiaro se non c'è HTTPS, e anche con HTTPS non c'è E2E</li>
+<li>Nessuna revoca nativa, nessun gossip, nessuna proof-of-possession</li>
+<li>Ogni chiamata è stateless — niente multiplexing, niente streaming nativo</li>
+</ul>
+<br>
+<p><strong>gRPC</strong> — HTTP/2, protobuf, bi-directional streaming. Tecnicamente superiore a REST, ma:</p>
+<ul>
+<li>Dipende da HTTP/2 — non è un protocollo di trasporto, è un framework RPC</li>
+<li>Nessuna identità autonoma: i peer non possono verificarsi senza un CA esterna</li>
+<li>Nessuna revoca distribuita, nessun gossip</li>
+<li>Complesso da configurare (protobuf, codegen, load balancer)</li>
+</ul>
+<br>
+<p><strong>WebSocket</strong> — Full-duplex, ma:</p>
+<ul>
+<li>Nessuna crittografia nativa (dipende da WSS = TLS)</li>
+<li>Nessuna identità, nessuna firma, nessuna revoca</li>
+<li>Nessun multiplexing: un solo canale, messaggi sequenziali</li>
+<li>Nessun handshake crittografico: è solo un upgrade HTTP</li>
+</ul>
+<br>
+<p><strong>MQTT</strong> — Leggero, pub/sub, ma:</p>
+<ul>
+<li>Richiede un broker centrale — single point of failure</li>
+<li>Nessuna identità peer-to-peer: l'autenticazione è username/password o certificato</li>
+<li>Nessuna crittografia end-to-end (solo TLS broker-to-client)</li>
+<li>Nessuna revoca distribuita, nessuna proof-of-possession</li>
+</ul>
+</div>
+
+<div class="card">
+<h3><span class="dot emerald"></span> Cosa rende ATP diverso</h3>
+<p>
+ATP non è "un altro protocollo di trasporto". È un <strong>protocollo di identità e cooperazione</strong>
+progettato specificamente per agenti autonomi. Ogni decisione di design parte da una domanda:
+<em>"Come fa un agente a fidarsi di un altro agente che non ha mai incontrato prima?"</em>
+</p>
+<br>
+<p>Le differenze fondamentali:</p>
+<ul>
+<li><strong>Identità autocertificata</strong> — L'MCC è un documento firmato dall'agente stesso. Nessuna CA necessaria. Il peer verifica la firma, non chiede a un'autorità.</li>
+<li><strong>Trust senza server centrale</strong> — Due agenti possono stabilire una connessione sicura senza mai parlare con un terzo. Questo è impossibile con HTTP/gRPC/WebSocket.</li>
+<li><strong>Crittografia a strati</strong> — TLS (trasporto) + ECDH X25519 (E2E) + Ed25519 (firma). Anche se il TLS viene violato, il payload rimane cifrato e autenticato. Nessun altro protocollo offre questo out-of-the-box.</li>
+<li><strong>Revoca distribuita</strong> — CuckooFilter + gossip TCP. Un agente compromesso viene revocato e la revoca si propaga a tutti i peer. Nessun server centrale di revoca.</li>
+<li><strong>Niente codice finto</strong> — BLAKE3 obbligatorio, niente fallback, niente demo mode bypassabile. Ogni test è reale (86 test, 0 mock).</li>
+</ul>
+</div>
+
+<div class="card">
+<h3><span class="dot violet"></span> Tabella comparativa</h3>
+
+<pre>
+┌──────────────────────┬──────────┬──────────┬──────────┬──────────┬──────────────┐
+│                      │  HTTP    │  gRPC    │ WebSocket│  MQTT    │   ATP        │
+│                      │  REST    │          │          │          │   v1.8       │
+├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
+│ Identità autonoma    │    ❌    │    ❌    │    ❌    │    ❌    │    ✅ MCC    │
+│ (nessuna CA esterna) │          │          │          │          │              │
+├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
+│ Crittografia E2E     │    ❌    │    ❌    │    ❌    │    ❌    │    ✅ X25519  │
+│ (oltre il trasporto) │          │          │          │          │    +AES-GCM   │
+├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
+│ Firma ogni messaggio │    ❌    │    ❌    │    ❌    │    ❌    │    ✅ Ed25519  │
+├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
+│ Revoca distribuita   │    ❌    │    ❌    │    ❌    │    ❌    │    ✅ Gossip   │
+│ (no server centrale) │          │          │          │          │    +Cuckoo    │
+├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
+│ Multiplexing nativo  │    ❌    │    ✅    │    ❌    │    ❌    │    ✅ task_id  │
+│                      │          │ HTTP/2   │          │          │    +QUIC      │
+├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
+│ Peer-to-peer nativo  │    ❌    │    ❌    │    ❌    │    ❌    │    ✅         │
+│ (no broker/server)   │          │          │          │ broker   │              │
+├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
+│ Proof-of-possession  │    ❌    │    ❌    │    ❌    │    ❌    │    ✅ nonce    │
+│ (dimostro la mia key)│          │          │          │          │    +challenge  │
+├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
+│ Task streaming       │    ❌    │    ✅    │    ✅    │    ✅    │    ✅ partial  │
+│ (risposte parziali)  │          │ server   │          │          │    +sequence  │
+├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
+│ Anti-replay nativo   │    ❌    │    ❌    │    ❌    │    ❌    │    ✅ 20s TTL  │
+├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
+│ Rate limiting nativo │    ❌    │    ❌    │    ❌    │    ❌    │    ✅ 100 RPS  │
+│                      │          │          │          │          │    +HS limit   │
+├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
+│ Handshake cifrato    │    ✅    │    ✅    │    ✅    │    ✅    │    ✅ 5 fasi   │
+│ (TLS)                │  HTTPS   │  HTTPS   │  WSS     │  TLS     │    +PoP+MCC   │
+├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
+│ QUIC support         │    ❌    │    ❌    │    ❌    │    ❌    │    ✅ RFC9000  │
+├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
+│ Codice aperto (MIT)  │    ✅    │    ✅    │    ✅    │    ✅    │    ✅         │
+├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
+│ Dipendenze           │   ∞      │   ∞      │   ∞      │   ∞      │    4 (5 con   │
+│                      │          │          │          │          │    aioquic)   │
+├──────────────────────┼──────────┼──────────┼──────────┼──────────┼──────────────┤
+│ Righe di codice      │  N/A     │  N/A     │  N/A     │  N/A     │    ~4.800     │
+│ (implementazione)    │          │          │          │          │    86 test    │
+└──────────────────────┴──────────┴──────────┴──────────┴──────────┴──────────────┘
+</pre>
+</div>
+
+<div class="card">
+<h3><span class="dot rose"></span> Quando NON usare ATP</h3>
+<p>
+ATP è progettato per comunicazione <strong>agente ↔ agente</strong>. Non è adatto per:
+</p>
+<ul>
+<li><strong>Browser ↔ Server</strong> — Usa HTTP/HTTPS. I browser non parlano CBOR nativamente.</li>
+<li><strong>Microservizi in stessa LAN</strong> — gRPC o messaggistica leggera sono più semplici.</li>
+<li><strong>Streaming video/audio in tempo reale</strong> — WebRTC è meglio per media in tempo reale.</li>
+<li><strong>IoT con vincoli estremi di memoria</strong> — MQTT o CoAP sono più leggeri.</li>
+<li><strong>Single-node / monolite</strong> — Se tutto gira sulla stessa macchina, chiamate dirette bastano.</li>
+</ul>
+<p>
+La regola pratica: <em>se hai bisogno che due agenti si identifichino, si verifichino e collaborino
+su internet senza un server centrale, ATP è la scelta giusta. Altrimenti, usa lo strumento più
+semplice che funziona.</em>
+</p>
+</div>
+
+<!-- ============================================================ -->
 <!-- 3. COME FUNZIONA -->
 <!-- ============================================================ -->
 <h2>3. Come funziona</h2>
