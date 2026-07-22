@@ -223,6 +223,7 @@ python teacher_client.py 192.168.1.50:8443
 | `teacher_school.py` | 2 | Insegnante ↔ scuola via internet |
 | `school_server.py` | 1 | Server scolastico con tunnel internet |
 | `teacher_client.py` | 1 | Client insegnante con menu interattivo |
+| `quic_example.py` | 2 | Server + client QUIC (RFC 9000) |
 
 ---
 
@@ -244,10 +245,12 @@ python teacher_client.py 192.168.1.50:8443
 
 ### 🔐 Crittografia
 - **Ed25519** — firme digitali, certificati, proof-of-possession
-- **X25519** — key agreement (ECDH, riservato per crittografia end-to-end futura)
+- **X25519** — ECDH key agreement per crittografia end-to-end
+- **AES-256-GCM** — cifratura simmetrica dei payload task (X25519 ECDH + BLAKE3 KDF)
+- **Authenticated E2E** — encrypt-then-sign: AES-256-GCM + Ed25519 firma sul ciphertext
 - **BLAKE3** — hash veloce (obbligatorio, nessun fallback)
 - **Key separation** — X25519 ≠ Ed25519 obbligatoria (anti dual-use)
-- **Mutual TLS con CA condivisa** — certificati firmati da CA interna, CERT_REQUIRED su entrambi i lati
+- **Mutual TLS** — CA condivisa, CERT_REQUIRED su entrambi i lati (TCP) o RSA 2048 (QUIC)
 
 ### 🆔 Merkle-Claim Card
 - Documento di identità verificabile come albero di Merkle
@@ -260,21 +263,40 @@ python teacher_client.py 192.168.1.50:8443
 
 ### ⚡ Task lifecycle
 - 20 frame types, 15 error codes, CBOR canonical encoding
-- Anti-replay (20s), rate limiting (100 RPS), clock skew (10s con fallback)
+- Anti-replay (20s), rate limiting (100 RPS), HandshakeRateLimiter (10 handshake/s IP)
+- Clock skew (10s con fallback server_time_ms)
 - **Multiplexing per task_id** — task concorrenti sulla stessa connessione
+- **Fire-and-forget** — task lunghi (DeepSeek 60s) non bloccano il reader loop
+- **Task streaming** — partial=true / sequence, risposte parziali accumulate
+- **Errori strutturati** — send_task ritorna {status, data, error_code, error_message}
 
 ### 🔄 Revoca distribuita
 - Cuckoo Filter (FPR ~2.3e-31), RootStore (persistente su JSON), Degradation Policy (3 stati)
 - **Gossip TCP reale** — seriali revocati trasmessi a peer su porta 8444
 - **CONTROL_REVOKE_NOTIFY** — frame ATP per revoca su connessione esistente
 
+### 🚀 QUIC Transport (RFC 9000)
+- Multiplexing nativo (stream QUIC indipendenti, no head-of-line blocking)
+- 0-RTT handshake, stream migration, ECN support
+- aioquic 1.3.0 (opzionale, TCP fallback automatico)
+- Certificati RSA 2048 per compatibilità TLS 1.3 (ECDSA P-256 in roadmap)
+- `QUICServer` e `QUICClient` in `atp_quic.py` — API identica a TCP
+
 ### 🌐 Tunnel internet zero-config
 - UPnP nativo (pure Python, zero dipendenze) — apre porta sul router automaticamente
 - Fallback ngrok opzionale se UPnP non disponibile
 - Key Card Ed25519 per connessione diretta (zero servizi esterni)
 
-### 📊 Dashboard PySide6
-- 5 tab: Overview, Traffic, Connections, Agents, Tasks
+### 📊 Dashboard e metriche
+- Dashboard PySide6 (5 tab: Overview, Traffic, Connections, Agents, Tasks)
+- **Metriche Prometheus** — headless-ready, nessuna dipendenza Qt
+- **Metriche CLI** — `get_metrics_text()` output plain-text
+- **Ring-buffer eventi** — ultimi 1000 eventi per debugging
+
+### 🔗 Multi-authority bootstrap
+- **ROOT_STORE_UPDATE** (0x21) — scambio di manifest firmati dopo handshake
+- **chain_add bootstrap** — autorità sconosciuta verificabile via manifest auto-contenuto
+- **RootStore persistente** — JSON con hex encoding, ricaricato a ogni avvio
 
 ---
 

@@ -9,6 +9,7 @@ in reti federate sicure in poche righe di codice.
 cd ATP/sdk
 pip install -e .              # core + tunnel UPnP nativo: aiohttp, blake3, cbor2, cryptography
 pip install -e ".[all]"       # tutto incluso dashboard
+pip install aioquic           # QUIC transport (opzionale, v1.8+)
 ```
 
 **Il tunnel internet non richiede dipendenze esterne** — UPnP nativo
@@ -474,8 +475,47 @@ root hash, firma dell'autorità, chiave separata, revoca. Nessuna modalità demo
 
 - Python ≥ 3.10
 - `aiohttp` ≥ 3.8 — HTTP client per DeepSeek
-- `blake3` ≥ 0.3 — hash crittografico (obbligatorio, nessun fallback)
-- `cbor2` ≥ 5.4 — codifica frame
+|- `blake3` ≥ 0.3 — hash crittografico (obbligatorio, nessun fallback)
+|- `cbor2` ≥ 5.4 — codifica frame
+|- `aioquic` ≥ 1.3.0 — QUIC transport (opzionale)
+
+## QUIC Transport (v1.8+)
+
+ATP supporta QUIC (RFC 9000) come alternativa a TCP+TLS.
+Il modulo `atp_quic.py` fornisce `QUICServer` e `QUICClient`
+con API identica a TCP.
+
+```python
+import asyncio
+from atp_quic import QUICServer, QUICClient
+
+async def main():
+    server = QUICServer()
+    await server.start('127.0.0.1', 18901)
+    
+    client = QUICClient()
+    await client.connect('127.0.0.1', 18901)
+    
+    result = await client.send_task('echo', 'hello')
+    print(result['status'])  # 'ok'
+
+asyncio.run(main())
+```
+
+### Differenze da TCP
+
+| TCP | QUIC |
+|-----|------|
+| TLS con CA Ed25519 condivisa | RSA 2048 per aioquic |
+| Multiplexing via asyncio.Future | Stream QUIC nativi |
+| 0-RTT: No | Sì |
+| `SimpleATPServer`/`SimpleATPClient` | `QUICServer`/`QUICClient` |
+
+### Requisiti
+
+```bash
+pip install aioquic
+```
 - `cryptography` ≥ 41.0 — TLS, chiavi, firme Ed25519/X25519
 - Tunnel internet: **UPnP nativo** (zero dipendenze, standard library pure Python)
 - `pyngrok` (opzionale) — solo se UPnP non disponibile

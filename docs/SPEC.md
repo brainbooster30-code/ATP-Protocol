@@ -456,5 +456,85 @@ coppia di chiavi per scopi diversi).
 
 ---
 
-*Riferimenti: DRAFT.md (design rationale), authority_system.md (autorità),
-docs/code/ (implementazione), start.txt (specifica estesa)*
+### 9.3 E2E Payload Encryption
+
+Oltre a TLS 1.3, ATP supporta crittografia end-to-end dei payload
+task. Dopo il handshake, se entrambi i peer hanno chiavi X25519
+nell'MCC, viene derivata una chiave AES-256-GCM simmetrica.
+
+**ECDH Key Agreement:**
+
+1. Ogni agente genera una coppia X25519 (pubblica + privata)
+2. La chiave pubblica è pubblicata nell'MCC come `agent_pk`
+3. Dopo handshake, ogni lato calcola:
+   ```
+   shared_secret = X25519(own_sk, peer_pk)
+   kdf_input = "atp-v1.7-ecdh" ++ shared_secret ++ sorted(local_pk, remote_pk)
+   session_key = BLAKE3(kdf_input)   # 32 byte, AES-256 key
+   ```
+4. Le chiavi pubbliche sono ordinate (sorted) per garantire KDF
+   identico su entrambi i lati
+5. `session_key` è un AES-256-GCM key
+
+**Authenticated Encryption (encrypt-then-sign):**
+
+Per ogni payload task:
+
+1. **Encrypt**: AES-256-GCM encrypt con nonce derivato da task_id
+2. **Sign**: Ed25519 firma sul ciphertext (nonce ++ ciphertext ++ tag)
+3. Concatenazione: `nonce(12) || ciphertext || tag(16) || signature(64)`
+
+Alla ricezione:
+
+1. **Verify**: Ed25519 verify della firma con la chiave pubblica del peer
+2. **Decrypt**: AES-256-GCM decrypt se la firma è valida
+3. Se la firma non corrisponde → TASK_ERROR con codice 0x0F
+
+### 9.4 Task Streaming
+
+TASK_RESPONSE supporta risposte parziali:
+
+- `partial: bool` — true se ci sono ulteriori chunk in arrivo
+- `sequence: uint` — numero di sequenza del chunk (1-based)
+
+Il client accumula chunk finché `partial=false` (o assente).
+Ogni chunk è cifrato individualmente con la sessione E2E.
+
+### 9.5 QUIC Transport (RFC 9000)
+
+ATP può usare QUIC invece di TCP+TLS. Il modulo `atp_quic.py`
+implementa `QUICServer` e `QUICClient` con API identica a TCP.
+
+**Differenze da TCP:**
+
+| Aspetto | TCP | QUIC |
+|---------|-----|------|
+| Trasporto | TCP + TLS 1.3 | QUIC (RFC 9000) |
+| Multiplexing | asyncio.Future per task_id | Stream QUIC indipendenti |
+| TLS | CA Ed25519 condivisa | RSA 2048 (aioquic 1.3) |
+| Handshake 0-RTT | No | Sì (wait_connected) |
+| Certificati | Ed25519 | RSA 2048 per compatibilità TLS 1.3 |
+| Fallback | — | TCP automatico se aioquic non installato |
+
+**Stream handler:** aioquic chiama `stream_handler` in modo sincrono
+(non async). ATP usa `asyncio.create_task()` per avviare il handler
+in background.
+
+**RootStore push:** Entrambi i lati condividono i propri RootStore
+dopo handshake tramite il frame `ROOT_STORE_UPDATE` (0x21).
+Il push avviene nel reader loop (non durante handshake) per evitare
+deadlock su QUIC.
+
+### 9.6 Multi-authority Bootstrap
+
+Quando un peer riceve un `ROOT_STORE_UPDATE` con un manifest firmato
+da un'autorità sconosciuta, tenta il bootstrap:
+
+1. Cerca l'`authority_id` nella lista `authorities` del manifest
+2. Se trovato, usa quella chiave pubblica per verificare la firma
+3. Se la firma è valida, aggiunge l'autorità al RootStore
+4. Tutte le autorità nel manifest vengono aggiunte al RootStore
+
+Questo permette trust bootstrap senza registrazione manuale:
+ogni agente include la propria chiave Ed25519 nel manifest
+che invia al peer durante il push post-handshake.
