@@ -10,13 +10,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import ssl
 from typing import Any, Optional
 
 # ── Parent ATP imports ────────────────────────────────────────────────────────
 from config import SERVER_HOST, SERVER_PORT, CONNECTION_SETUP_TIMEOUT_MS
-from agent import ATPAgent, AgentIdentity
+from agent import ATPAgent, AgentIdentity, make_ssl_context, create_mcc_for_identity
 from monitor import Monitor
+from atp_core import MCC
 
 logger = logging.getLogger(__name__)
 
@@ -50,14 +50,15 @@ class SimpleATPClient:
 
         # Underlying protocol objects — created on connect()
         self._identity: Optional[AgentIdentity] = None
+        self._mcc: Optional[MCC] = None
         self._agent: Optional[ATPAgent] = None
         self._reader: Optional[asyncio.StreamReader] = None
         self._writer: Optional[asyncio.StreamWriter] = None
         self._connected: bool = False
         self._host: str = ""
         self._port: int = 0
-        self.demo_mode: bool = True  # skip root store check for demo/deploy
-        self.verify_tls: bool = False  # set True for production with real certs
+        self.rate_limiter = None  # rate limiter (core ATP), None = off
+        self.anti_replay = None  # anti-replay (core ATP), None = off
 
     # ── Connection lifecycle ──────────────────────────────────────────────
 
@@ -93,17 +94,11 @@ class SimpleATPClient:
 
         # Create identity (generates fresh X25519 + Ed25519 keypairs)
         self._identity = AgentIdentity(agent_name=self.agent_name)
+        # Create MCC from identity (for Key Card export)
+        self._mcc = create_mcc_for_identity(self._identity)
 
-        # Build SSL context
-        ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        if self.verify_tls:
-            ssl_ctx.check_hostname = True
-            ssl_ctx.verify_mode = ssl.CERT_REQUIRED
-            # Load default CA certs for production
-            ssl_ctx.load_default_certs()
-        else:
-            ssl_ctx.check_hostname = False
-            ssl_ctx.verify_mode = ssl.CERT_NONE
+        # Build SSL context with CA-signed cert (mutual TLS)
+        ssl_ctx = make_ssl_context(server_side=False, cn=f"atp-sdk-client-{host}:{port}")
 
         try:
             self._reader, self._writer = await asyncio.wait_for(
@@ -120,7 +115,8 @@ class SimpleATPClient:
             identity=self._identity,
             is_server=False,
             monitor=self.monitor,
-            demo_mode=self.demo_mode,
+            rate_limiter=self.rate_limiter,
+            anti_replay=self.anti_replay,
         )
 
         ok = await self._agent.perform_handshake(self._reader, self._writer)
@@ -245,7 +241,7 @@ class SimpleATPClient:
                 self._writer.close()
                 await self._writer.wait_closed()
             except Exception:
-                pass
+                pass  # nosec
             self._writer = None
 
         self._reader = None
@@ -258,6 +254,32 @@ class SimpleATPClient:
     def connected(self) -> bool:
         """True if the client is connected and bound."""
         return self._connected
+
+    @property
+    def identity(self) -> Optional[AgentIdentity]:
+        """The client's AgentIdentity, containing Ed25519/X25519 keypairs."""
+        return self._identity
+
+    @property
+    def identity_sk(self) -> bytes:
+        """The client's Ed25519 private key (signing key)."""
+        if self._identity:
+            return self._identity.ed25519_sk
+        return b""
+
+    @property
+    def identity_pk(self) -> bytes:
+        """The client's Ed25519 public key (verification key)."""
+        if self._identity:
+            return self._identity.ed25519_pk
+        return b""
+
+    @property
+    def identity_mcc_hash(self) -> str:
+        """Hex digest of the client's MCC Merkle root hash."""
+        if self._mcc:
+            return self._mcc.root_hash.hex()
+        return ""
 
     @property
     def peer_mcc_hash(self) -> Optional[str]:

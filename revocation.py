@@ -11,6 +11,7 @@ import math
 import struct
 import logging
 import threading
+import json
 from typing import Optional
 from collections import OrderedDict
 
@@ -77,8 +78,7 @@ class CuckooFilter:
                 bucket = self._table[cur_i]
                 if not bucket:
                     continue
-                import random
-                kick_idx = random.randrange(len(bucket))
+                kick_idx = self._random_index(len(bucket))
                 kicked_fp = bucket[kick_idx]
                 bucket[kick_idx] = fp  # place our fp here
 
@@ -146,6 +146,11 @@ class CuckooFilter:
         with self._lock:
             return fp in self._table[idx]
 
+    def _random_index(self, bucket_len: int) -> int:
+        """Cryptographically secure random index for bucket eviction."""
+        from secrets import randbelow
+        return randbelow(bucket_len)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Root Store  —  trusted authority public key storage with chain verification
@@ -163,16 +168,65 @@ def _root_store_default(cls) -> dict:
 class RootStore:
     """
     Thread-safe store for trusted authority public keys.
-    Supports chain-of-manifests: each manifest is signed by the previous authority.
+    Supports chain-of-manifests + file persistence.
     """
 
-    def __init__(self):
+    def __init__(self, path: Optional[str] = None):
         self._lock = threading.Lock()
+        self._persist_path = path or os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "root_store.json"
+        )
         self._manifest: dict = {
             "version": 1,
-            "authorities": {},    # authority_id → {"pk": bytes, "added": int, "expires": int}
-            "chain": [],          # list of previous manifest signatures (chain-of-manifests)
+            "authorities": {},    # authority_id → {"pk_hex": str, "added": int, "expires": int}
+            "chain": [],          # list of previous manifest signatures
         }
+        self._load()
+
+    # ── persistence ─────────────────────────────────────────────────
+
+    def _load(self):
+        """Load root store from JSON file if it exists."""
+        try:
+            with open(self._persist_path, "r") as f:
+                data = json.load(f)
+            # Reconstruct in-memory format: convert hex pk back to bytes
+            manifest = {
+                "version": data.get("version", 1),
+                "authorities": {},
+                "chain": data.get("chain", []),
+            }
+            for auth_id, entry in data.get("authorities", {}).items():
+                manifest["authorities"][auth_id] = {
+                    "pk": bytes.fromhex(entry["pk_hex"]),
+                    "added": entry["added"],
+                    "expires": entry["expires"],
+                }
+            self._manifest = manifest
+            logger.info("RootStore loaded %d authorities from %s",
+                        len(manifest["authorities"]), self._persist_path)
+        except (FileNotFoundError, json.JSONDecodeError):
+            logger.info("RootStore: no existing store at %s, starting fresh",
+                        self._persist_path)
+
+    def _save(self):
+        """Persist root store to JSON file."""
+        try:
+            data = {
+                "version": self._manifest["version"],
+                "authorities": {},
+                "chain": self._manifest["chain"],
+            }
+            for auth_id, entry in self._manifest["authorities"].items():
+                data["authorities"][auth_id] = {
+                    "pk_hex": entry["pk"].hex(),
+                    "added": entry["added"],
+                    "expires": entry["expires"],
+                }
+            with open(self._persist_path, "w") as f:
+                json.dump(data, f, indent=2)
+        except Exception as exc:
+            logger.warning("RootStore: failed to persist: %s", exc)
 
     def add_authority(self, authority_id: str, public_key: bytes,
                       ttl_seconds: int = 86400 * 365) -> bool:
@@ -183,6 +237,7 @@ class RootStore:
                 "added": int(time.time()),
                 "expires": int(time.time()) + ttl_seconds,
             }
+            self._save()
             logger.info("RootStore: added authority %s", authority_id)
             return True
 
@@ -327,14 +382,14 @@ class GossipProtocol:
         Execute one gossip round: send known revoked serials to fanout peers.
         (In a full implementation, this would open connections and exchange data.)
         """
-        import asyncio, random
+        import asyncio, secrets
         with self._lock:
             peers = list(self._peers.values())
             if not peers or not self._revoked_serials:
                 return
 
             fanout = min(len(peers), 3)
-            targets = random.sample(peers, fanout)
+            targets = secrets.SystemRandom().sample(peers, fanout)
 
         serials_hex = [s.hex()[:8] for s in self._revoked_serials]
         logger.info("Gossip round: %d revoked serials → %d peers: %s",

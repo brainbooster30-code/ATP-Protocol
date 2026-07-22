@@ -7,11 +7,12 @@ from __future__ import annotations
 import asyncio
 import ssl
 import json
+import os
 import logging
 from typing import Optional
 
 from config import SERVER_HOST, SERVER_PORT, CONNECTION_SETUP_TIMEOUT_MS
-from agent import ATPAgent, AgentIdentity, get_self_signed_cert
+from agent import ATPAgent, AgentIdentity, make_ssl_context
 from monitor import Monitor
 
 logger = logging.getLogger(__name__)
@@ -36,10 +37,8 @@ class ATPClient:
         """Connect to the server and perform the ATP handshake."""
         self._loop = asyncio.get_running_loop()
 
-        # Build SSL context (client mode — accept any self-signed cert)
-        ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE  # demo: trust any self-signed cert
+        # Build SSL context with CA-signed cert (mutual TLS)
+        ssl_ctx = make_ssl_context(server_side=False, cn=f"atp-client-{host}:{port}")
 
         try:
             self._reader, self._writer = await asyncio.wait_for(
@@ -90,6 +89,6 @@ class ATPClient:
                 self._writer.close()
                 await self._writer.wait_closed()
             except Exception:
-                pass
+                pass  # nosec — cleanup on disconnect
         self._connected = False
         logger.info("ATP Client disconnected")

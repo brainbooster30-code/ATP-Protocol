@@ -28,12 +28,10 @@ try:
     def blake3_hash(data: bytes) -> bytes:
         return blake3.blake3(data).digest()
 except ImportError:
-    import hashlib
-
-    def blake3_hash(data: bytes) -> bytes:
-        """Fallback: BLAKE2b-256 when blake3 is not installed."""
-        return hashlib.blake2b(data, digest_size=32).digest()
-    logger.warning("blake3 not found — using BLAKE2b-256 fallback")
+    raise ImportError(
+        "BLAKE3 is REQUIRED for ATP v1.7. Install: pip install blake3\n"
+        "No fallback is allowed — BLAKE2b is NOT interoperable with BLAKE3."
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -262,6 +260,17 @@ class MCC:
                 if leaf.key == "agent_pk" and leaf.value != expected_agent_pk:
                     logger.warning("MCC verify: agent_pk mismatch")
                     return False
+
+        # Step 7.5 — Key separation check (ATP-Full §6)
+        pk_val = sign_pk_val = None
+        for leaf in self.leaves:
+            if leaf.key == "agent_pk":
+                pk_val = leaf.value
+            elif leaf.key == "agent_sign_pk":
+                sign_pk_val = leaf.value
+        if pk_val is not None and sign_pk_val is not None and pk_val == sign_pk_val:
+            logger.warning("MCC verify: agent_pk == agent_sign_pk — key separation violated")
+            return False
 
         # Step 8 — revocation check (ATP-Full)
         if check_revoked:

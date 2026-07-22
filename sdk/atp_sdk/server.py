@@ -21,9 +21,9 @@ from typing import Any, Callable, Awaitable, Optional
 
 # ── Parent ATP imports ────────────────────────────────────────────────────────
 from config import SERVER_HOST, SERVER_PORT
-from agent import ATPAgent, AgentIdentity, get_self_signed_cert
+from agent import ATPAgent, AgentIdentity, make_ssl_context, get_ca_cert_pem, create_mcc_for_identity
 from monitor import Monitor
-from atp_core import decode_frame, build_header, send_frame
+from atp_core import decode_frame, build_header, send_frame, MCC
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +63,13 @@ class SimpleATPServer:
         self.agent_name: str = agent_name
         self.monitor: Optional[Monitor] = monitor
 
+        # Rate limiter e anti-replay (dal core protocol, default None = disattivati)
+        self.rate_limiter = None
+        self.anti_replay = None
+
         # Underlying protocol objects
         self._identity: AgentIdentity = AgentIdentity(agent_name=agent_name)
+        self._mcc: Optional["MCC"] = None  # created in start()
         self._server: Optional[asyncio.AbstractServer] = None
         self._task: Optional[asyncio.Task[None]] = None
         self._running: bool = False
@@ -99,21 +104,13 @@ class SimpleATPServer:
         if self._running:
             raise RuntimeError("Server is already running")
 
-        # Build SSL context with self-signed cert
-        cert_pem, key_pem = get_self_signed_cert()
-        ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
+        # Create MCC from identity (for Key Card export)
+        self._mcc = create_mcc_for_identity(self._identity)
 
-        # Write cert+key to SDK directory (cleaned on stop)
-        sdk_dir = os.path.dirname(os.path.abspath(__file__))
-        self._cert_path = os.path.join(sdk_dir, "_sdk_server_cert.pem")
-        self._key_path = os.path.join(sdk_dir, "_sdk_server_key.pem")
-        with open(self._cert_path, "wb") as cf:
-            cf.write(cert_pem)
-        with open(self._key_path, "wb") as kf:
-            kf.write(key_pem)
-        ssl_ctx.load_cert_chain(self._cert_path, self._key_path)
+        # Build SSL context with CA-signed cert (mutual TLS)
+        ssl_ctx = make_ssl_context(server_side=True, cn=f"atp-sdk-server-{host}:{port}")
+        # Save CA cert path for client use
+        self._ca_path = None
 
         self._server = await asyncio.start_server(
             self._on_connect,
@@ -168,15 +165,6 @@ class SimpleATPServer:
                 pass
             self._server = None
 
-        # Clean up TLS cert/key files written to disk
-        for p in ("_cert_path", "_key_path"):
-            path = getattr(self, p, None)
-            if path and os.path.isfile(path):
-                try:
-                    os.unlink(path)
-                except OSError:
-                    pass
-
         logger.info("SimpleATPServer stopped")
 
     # ── Connection handler ────────────────────────────────────────────────
@@ -195,7 +183,8 @@ class SimpleATPServer:
             is_server=True,
             monitor=self.monitor,
             task_handler=self._dispatch_task,
-            demo_mode=True,
+            rate_limiter=self.rate_limiter,
+            anti_replay=self.anti_replay,
         )
 
         try:
@@ -217,7 +206,7 @@ class SimpleATPServer:
                 writer.close()
                 await writer.wait_closed()
             except Exception:
-                pass
+                pass  # nosec
             logger.info("SimpleATPServer: connection closed from %s", peer)
 
     # ── Task dispatch ─────────────────────────────────────────────────────
@@ -298,6 +287,28 @@ class SimpleATPServer:
     def running(self) -> bool:
         """True if the server is currently accepting connections."""
         return self._running
+
+    @property
+    def identity(self) -> AgentIdentity:
+        """The server's AgentIdentity, containing Ed25519/X25519 keypairs."""
+        return self._identity
+
+    @property
+    def identity_sk(self) -> bytes:
+        """The server's Ed25519 private key (signing key)."""
+        return self._identity.ed25519_sk
+
+    @property
+    def identity_pk(self) -> bytes:
+        """The server's Ed25519 public key (verification key)."""
+        return self._identity.ed25519_pk
+
+    @property
+    def identity_mcc_hash(self) -> str:
+        """Hex digest of the server's MCC Merkle root hash."""
+        if self._mcc:
+            return self._mcc.root_hash.hex()
+        return ""
 
     # ── Context manager support ───────────────────────────────────────────
 
@@ -382,7 +393,7 @@ class SyncATPServer:
         try:
             loop.close()
         except Exception:
-            pass
+            pass  # nosec
         self._loop = None
 
     @property

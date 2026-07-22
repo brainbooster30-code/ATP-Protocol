@@ -12,6 +12,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional, Callable, Awaitable
 
+import uuid
+
 from cryptography import x509
 from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import hashes, serialization
@@ -132,37 +134,28 @@ def create_mcc_for_identity(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  Self-signed TLS certificate helper
+#  TLS Certificate helpers — CA + signed certs for mutual TLS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _generate_self_signed_ed25519_cert() -> tuple[bytes, bytes]:
-    """Generate a self-signed Ed25519 TLS cert + key.
-    Returns (cert_pem_bytes, private_key_pem_bytes)."""
+def _generate_ca_cert() -> tuple[bytes, bytes]:
+    """Generate a self-signed CA cert + key (Ed25519)."""
     import datetime
-    private_key = ed25519.Ed25519PrivateKey.generate()
-    public_key = private_key.public_key()
-
-    subject = issuer = x509.Name([
-        x509.NameAttribute(NameOID.COMMON_NAME, "ATP Demo Agent"),
-    ])
-
+    ca_key = ed25519.Ed25519PrivateKey.generate()
+    ca_pub = ca_key.public_key()
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "ATP Test CA")])
     cert = (
         x509.CertificateBuilder()
-        .subject_name(subject)
-        .issuer_name(issuer)
-        .public_key(public_key)
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(ca_pub)
         .serial_number(x509.random_serial_number())
         .not_valid_before(datetime.datetime.utcnow() - datetime.timedelta(days=1))
         .not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=365 * 10))
-        .add_extension(
-            x509.BasicConstraints(ca=False, path_length=None),
-            critical=True,
-        )
-        .sign(private_key, None, default_backend())
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(ca_key, None, default_backend())
     )
-
     cert_pem = cert.public_bytes(serialization.Encoding.PEM)
-    key_pem = private_key.private_bytes(
+    key_pem = ca_key.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
@@ -170,30 +163,88 @@ def _generate_self_signed_ed25519_cert() -> tuple[bytes, bytes]:
     return cert_pem, key_pem
 
 
-# ── cache cert/key per process ────────────────────────────────────────────────
+def _sign_cert(ca_cert_pem: bytes, ca_key_pem: bytes, cn: str) -> tuple[bytes, bytes]:
+    """Sign a new Ed25519 cert with the CA. Returns (cert_pem, key_pem)."""
+    import datetime
+    from cryptography.x509.oid import NameOID
+    # Load CA
+    ca_cert = x509.load_pem_x509_certificate(ca_cert_pem)
+    ca_key = serialization.load_pem_private_key(ca_key_pem, password=None, backend=default_backend())
+    # Generate node keypair
+    node_key = ed25519.Ed25519PrivateKey.generate()
+    node_pub = node_key.public_key()
+    # Build and sign cert
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(ca_cert.subject)
+        .public_key(node_pub)
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.datetime.utcnow() - datetime.timedelta(days=1))
+        .not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=365 * 10))
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .sign(ca_key, None, default_backend())  # type: ignore[arg-type]
+    )
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM)
+    key_pem = node_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    return cert_pem, key_pem
+
+
+# ── cache per process ────────────────────────────────────────────────
+_ca_cert_pem: Optional[bytes] = None
+_ca_key_pem: Optional[bytes] = None
 _cert_pem: Optional[bytes] = None
 _key_pem: Optional[bytes] = None
+_cert_cn: str = ""
 
 
-def get_self_signed_cert() -> tuple[bytes, bytes]:
-    global _cert_pem, _key_pem
-    if _cert_pem is None:
-        _cert_pem, _key_pem = _generate_self_signed_ed25519_cert()
+def _ensure_ca() -> tuple[bytes, bytes]:
+    """Get or create the shared CA cert+key."""
+    global _ca_cert_pem, _ca_key_pem
+    if _ca_cert_pem is None:
+        _ca_cert_pem, _ca_key_pem = _generate_ca_cert()
+    return _ca_cert_pem, _ca_key_pem
+
+
+def get_self_signed_cert(cn: str = "atp-agent") -> tuple[bytes, bytes]:
+    """Get a CA-signed cert for *cn*. Cached per distinct CN."""
+    global _cert_pem, _key_pem, _cert_cn
+    if _cert_pem is None or _cert_cn != cn:
+        ca_cert, ca_key = _ensure_ca()
+        _cert_pem, _key_pem = _sign_cert(ca_cert, ca_key, cn)
+        _cert_cn = cn
     return _cert_pem, _key_pem
+
+
+def get_ca_cert_pem() -> bytes:
+    """Return the CA cert PEM (for client trust store)."""
+    ca_cert, _ = _ensure_ca()
+    return ca_cert
 
 
 def make_ssl_context(
     server_side: bool = False,
-) -> tuple:
-    """Build an SSLContext and return (ssl_context, cert_pem, key_pem)."""
-    import ssl
-    cert_pem, key_pem = get_self_signed_cert()
+    cn: str = "atp-agent",
+) -> ssl.SSLContext:
+    """Build an SSLContext for server or client with mutual TLS.
+    
+    Both sides share the same CA. Server uses CERT_REQUIRED,
+    client uses CERT_REQUIRED + presents its own cert.
+    """
+    import ssl, tempfile
+    cert_pem, key_pem = get_self_signed_cert(cn=cn)
+    ca_cert_pem = get_ca_cert_pem()
+
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER if server_side else ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE if not server_side else ssl.CERT_REQUIRED
-    ctx.load_cert_chain(certfile=None, keyfile=None)
-    # Workaround: write cert to temp files for SSLContext
-    import tempfile
+    ctx.verify_mode = ssl.CERT_REQUIRED
+
+    # Write cert+key to temp files
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pem") as cf:
         cf.write(cert_pem)
         cert_path = cf.name
@@ -201,9 +252,13 @@ def make_ssl_context(
         kf.write(key_pem)
         key_path = kf.name
     ctx.load_cert_chain(cert_path, key_path)
-    if server_side:
-        ctx.load_verify_locations(cert_path)
-    return ctx, cert_pem, key_pem
+
+    # Write CA cert to temp file
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pem") as caf:
+        caf.write(ca_cert_pem)
+        ca_path = caf.name
+    ctx.load_verify_locations(ca_path)
+    return ctx
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -228,13 +283,15 @@ class ATPAgent:
         is_server: bool = False,
         monitor: Optional[Monitor] = None,
         task_handler: Optional[Callable[[dict], Awaitable[dict]]] = None,
-        demo_mode: bool = False,
+        rate_limiter=None,
+        anti_replay=None,
     ):
         self.identity = identity
         self.is_server = is_server
         self.monitor = monitor
         self.task_handler = task_handler  # async callable(task_payload) -> result
-        self.demo_mode = demo_mode  # skip root store verification for demo/deploy
+        self.rate_limiter = rate_limiter
+        self.anti_replay = anti_replay
 
         self.mcc: Optional[MCC] = create_mcc_for_identity(identity)
         self.peer_mcc: Optional[MCC] = None
@@ -244,9 +301,12 @@ class ATPAgent:
         self._conn_id: str = ""
         self._reader: Optional[asyncio.StreamReader] = None
         self._writer: Optional[asyncio.StreamWriter] = None
-        self._task_lock = asyncio.Lock()  # serialize concurrent send_task calls
+        self._pending_responses: dict[bytes, asyncio.Future] = {}
+        self._pending_lock = asyncio.Lock()
+        self._frame_reader_task: Optional[asyncio.Task] = None
         self._keepalive_task: Optional[asyncio.Task] = None
         self._keepalive_interval: float = 30.0  # seconds between PINGs
+        self._current_task: Optional[asyncio.Task] = None  # track for cancellation
 
 
         # Register agent identity in monitor
@@ -274,7 +334,7 @@ class ATPAgent:
         """
         self._reader = reader
         self._writer = writer
-        self._conn_id = f"{id(self):x}"
+        self._conn_id = uuid.uuid4().hex[:12]
 
         if self.monitor:
             self.monitor.add_event(CONNECTION_OPEN, {
@@ -327,7 +387,7 @@ class ATPAgent:
                 }
                 await send_frame(writer, err_frame)
             except Exception:
-                pass
+                pass  # nosec — cleanup, connection already dying
             if self.monitor:
                 self.monitor.add_event(HANDSHAKE_FAILED, {
                     "conn_id": self._conn_id,
@@ -342,93 +402,114 @@ class ATPAgent:
         deadline_ms: int = 30_000,
         priority: int = 4,
     ) -> Optional[dict]:
-        """Send a TASK_REQUEST and wait for the TASK_RESPONSE."""
+        """Send a TASK_REQUEST and wait for the TASK_RESPONSE.
+        
+        Supports multiple concurrent in-flight tasks (multiplexing per task_id).
+        Starts a background frame reader if not already running.
+        """
         if not self.bound or not self._writer:
             logger.error("send_task: not bound")
             return None
 
-        async with self._task_lock:
+        if self.monitor:
+            self.monitor.add_event(TASK_START, {
+                "conn_id": self._conn_id,
+                "task_type": task_type,
+            })
+
+        task_id = os.urandom(16)
+        header = build_header(0x01, task_id)
+        req_frame = {
+            "header": header,
+            "task_type": task_type,
+            "task_payload": payload,
+            "deadline_ms": deadline_ms,
+            "metadata": {"priority": priority},
+            "priority_hint": priority,
+        }
+
+        # Register pending response
+        future: asyncio.Future[Optional[dict]] = asyncio.get_running_loop().create_future()
+        async with self._pending_lock:
+            self._pending_responses[task_id] = future
+
+        # Start background frame reader if not running
+        if self._frame_reader_task is None or self._frame_reader_task.done():
+            self._frame_reader_task = asyncio.create_task(self._frame_reader_loop())
+
+        # Send TASK_REQUEST
+        await self._send_frame(req_frame)
+
+        try:
+            # Wait for response with timeout
+            resp = await asyncio.wait_for(future, timeout=deadline_ms / 1000 + 5)
+        except asyncio.TimeoutError:
+            logger.warning("send_task: timeout waiting for response (task %s)", task_id.hex()[:8])
+            async with self._pending_lock:
+                self._pending_responses.pop(task_id, None)
             if self.monitor:
-                self.monitor.add_event(TASK_START, {
+                self.monitor.add_event(TASK_ERROR, {
+                    "conn_id": self._conn_id,
+                    "error_code": 0x0B,
+                    "error_message": "Task timeout",
+                })
+            return None
+        finally:
+            async with self._pending_lock:
+                self._pending_responses.pop(task_id, None)
+
+        if resp is None:
+            return None
+
+        ft = resp.get("header", {}).get("frame_type")
+        if ft == 0x04:
+            if self.monitor:
+                self.monitor.add_event(TASK_ERROR, {
+                    "conn_id": self._conn_id,
+                    "error_code": resp.get("error_code"),
+                    "error_message": resp.get("error_message"),
+                })
+                self.monitor.add_task({
+                    "task_id": task_id.hex()[:8],
+                    "task_type": task_type,
+                    "request": payload.decode("utf-8", errors="replace")[:80],
+                    "response": resp.get("error_message", "")[:200],
+                    "status": "error",
+                    "error_code": resp.get("error_code"),
+                    "latency_ms": 0,
+                    "agent": self.identity.agent_name,
+                    "direction": "sent",
+                    "timestamp": time.time(),
+                })
+            return resp
+
+        if ft == 0x02:
+            sent_time = header["timestamp"]
+            latency = int(time.time() * 1000) - sent_time
+            result_bytes = resp.get("result_payload", b"")
+            result_text = result_bytes.decode("utf-8", errors="replace")[:200]
+            if self.monitor:
+                self.monitor.add_event(TASK_COMPLETE, {
                     "conn_id": self._conn_id,
                     "task_type": task_type,
+                    "latency_ms": latency,
                 })
+                self.monitor.add_task({
+                    "task_id": task_id.hex()[:8],
+                    "task_type": task_type,
+                    "request": payload.decode("utf-8", errors="replace")[:80],
+                    "response": result_text,
+                    "status": "completed",
+                    "error_code": None,
+                    "latency_ms": latency,
+                    "agent": self.identity.agent_name,
+                    "direction": "sent",
+                    "timestamp": time.time(),
+                })
+            return resp
 
-            task_id = os.urandom(16)
-            header = build_header(0x01, task_id)
-            req_frame = {
-                "header": header,
-                "task_type": task_type,
-                "task_payload": payload,
-                "deadline_ms": deadline_ms,
-                "metadata": {"priority": priority},
-                "priority_hint": priority,
-            }
-
-            # Send TASK_REQUEST
-            await self._send_frame(req_frame)
-
-            # Expect TASK_ACK
-            ack = await self._read_frame()
-            if ack is None or ack.get("header", {}).get("frame_type") != 0x03:
-                logger.warning("send_task: expected TASK_ACK, got %s",
-                               FRAME_TYPES.get(ack.get("header", {}).get("frame_type"), "?"))
-                return None
-
-            # Expect TASK_RESPONSE
-            resp = await self._read_frame()
-            if resp is None:
-                return None
-
-            ft = resp.get("header", {}).get("frame_type")
-            if ft == 0x04:
-                if self.monitor:
-                    self.monitor.add_event(TASK_ERROR, {
-                        "conn_id": self._conn_id,
-                        "error_code": resp.get("error_code"),
-                        "error_message": resp.get("error_message"),
-                    })
-                    self.monitor.add_task({
-                        "task_id": task_id.hex()[:8],
-                        "task_type": task_type,
-                        "request": payload.decode("utf-8", errors="replace")[:80],
-                        "response": resp.get("error_message", "")[:200],
-                        "status": "error",
-                        "error_code": resp.get("error_code"),
-                        "latency_ms": 0,
-                        "agent": self.identity.agent_name,
-                        "direction": "sent",
-                        "timestamp": time.time(),
-                    })
-                return resp
-
-            if ft == 0x02:
-                sent_time = header["timestamp"]
-                latency = int(time.time() * 1000) - sent_time
-                result_bytes = resp.get("result_payload", b"")
-                result_text = result_bytes.decode("utf-8", errors="replace")[:200]
-                if self.monitor:
-                    self.monitor.add_event(TASK_COMPLETE, {
-                        "conn_id": self._conn_id,
-                        "task_type": task_type,
-                        "latency_ms": latency,
-                    })
-                    self.monitor.add_task({
-                        "task_id": task_id.hex()[:8],
-                        "task_type": task_type,
-                        "request": payload.decode("utf-8", errors="replace")[:80],
-                        "response": result_text,
-                        "status": "completed",
-                        "error_code": None,
-                        "latency_ms": latency,
-                        "agent": self.identity.agent_name,
-                        "direction": "sent",
-                        "timestamp": time.time(),
-                    })
-                return resp
-
-            logger.warning("send_task: unexpected frame 0x%02x", ft)
-            return None
+        logger.warning("send_task: unexpected frame 0x%02x", ft)
+        return None
 
     async def handle_task_loop(self):
         """Server loop: read incoming frames and dispatch tasks."""
@@ -439,51 +520,110 @@ class ATPAgent:
                 frame = await self._read_frame()
                 if frame is None:
                     break
-
-                ft = frame.get("header", {}).get("frame_type")
-                if ft == 0x01:
-                    await self._handle_task_request(frame)
-                elif ft == 0x10:
-                    logger.info("Received CONTROL_SHUTDOWN")
-                    # Send SHUTDOWN_ACK before breaking
-                    try:
-                        ack = {"header": build_header(0x12)}
-                        await self._send_frame(ack)
-                    except Exception:
-                        pass
-                    break
-                elif ft == 0x05:
-                    logger.info("Received TASK_CANCEL")
-                    # Cancel current task if any
-                    if self.monitor:
-                        self.monitor.add_event(TASK_ERROR, {
-                            "conn_id": self._conn_id,
-                            "error_code": 0x0F,
-                            "error_message": "Task cancelled by peer",
-                        })
-                elif ft == 0x12:
-                    logger.info("Received SHUTDOWN_ACK — closing cleanly")
-                    break
-                elif ft == 0x15:
-                    # PING → PONG
-                    try:
-                        pong = {"header": build_header(0x16), "timestamp": int(time.time() * 1000)}
-                        await self._send_frame(pong)
-                    except Exception:
-                        pass
-                    self._last_peer_activity = time.time()
-                elif ft == 0x16:
-                    # PONG received — peer is alive
-                    self._last_peer_activity = time.time()
-                elif ft == 0x20:
-                    logger.warning("Received ERROR frame: %s", frame.get("error_message"))
-                else:
-                    logger.debug("Ignoring frame 0x%02x", ft)
+                await self._dispatch_frame(frame)
             except asyncio.CancelledError:
                 break
             except Exception:
                 logger.exception("handle_task_loop error")
                 break
+
+    async def _frame_reader_loop(self):
+        """Background reader: reads and dispatches frames (client + server).
+        
+        For the server, this runs instead of handle_task_loop.
+        For the client, this runs to receive async responses.
+        Routes TASK_RESPONSE/TASK_ERROR to pending futures by task_id.
+        """
+        while self.bound and self._reader:
+            try:
+                frame = await self._read_frame()
+                if frame is None:
+                    break
+                await self._dispatch_frame(frame)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("_frame_reader_loop error")
+                break
+
+    async def _dispatch_frame(self, frame: dict):
+        """Dispatch an incoming frame to the right handler."""
+        ft = frame.get("header", {}).get("frame_type")
+        task_id = frame.get("header", {}).get("task_id", b"")
+
+        # Route TASK_RESPONSE / TASK_ERROR to pending futures
+        if ft in (0x02, 0x04) and task_id != b"\x00" * 16:
+            async with self._pending_lock:
+                future = self._pending_responses.get(task_id)
+                if future and not future.done():
+                    future.set_result(frame)
+                    logger.debug("Routed frame 0x%02x to pending future for task %s",
+                                 ft, task_id.hex()[:8])
+                    return
+                # No pending future — might be a server receiving a task response
+                # (not expected for server, but log and continue)
+                logger.debug("No pending future for task %s (frame 0x%02x)",
+                             task_id.hex()[:8], ft)
+
+        if self.is_server:
+            # Server-side dispatch
+            if ft == 0x01:
+                await self._handle_task_request(frame)
+            elif ft == 0x10:
+                logger.info("Received CONTROL_SHUTDOWN")
+                try:
+                    ack = {"header": build_header(0x12)}
+                    await self._send_frame(ack)
+                except Exception:
+                    pass
+            elif ft == 0x05:
+                logger.info("Received TASK_CANCEL — cancelling current task")
+                if self._current_task and not self._current_task.done():
+                    self._current_task.cancel()
+                if self.monitor:
+                    self.monitor.add_event(TASK_ERROR, {
+                        "conn_id": self._conn_id,
+                        "error_code": 0x0F,
+                        "error_message": "Task cancelled by peer",
+                    })
+            elif ft == 0x13:
+                try:
+                    health_resp = {
+                        "header": build_header(0x14),
+                        "status": "ok",
+                        "timestamp": int(time.time() * 1000),
+                        "bound": self.bound,
+                    }
+                    await self._send_frame(health_resp)
+                except Exception:
+                    pass
+            elif ft == 0x12:
+                logger.info("Received SHUTDOWN_ACK — closing cleanly")
+            elif ft == 0x15:
+                try:
+                    pong = {"header": build_header(0x16), "timestamp": int(time.time() * 1000)}
+                    await self._send_frame(pong)
+                except Exception:
+                    pass
+                self._last_peer_activity = time.time()
+            elif ft == 0x16:
+                self._last_peer_activity = time.time()
+            elif ft == 0x20:
+                logger.warning("Received ERROR frame: %s", frame.get("error_message"))
+            else:
+                logger.debug("Ignoring frame 0x%02x", ft)
+        else:
+            # Client-side dispatch
+            if ft == 0x15:
+                try:
+                    pong = {"header": build_header(0x16), "timestamp": int(time.time() * 1000)}
+                    await self._send_frame(pong)
+                except Exception:
+                    pass
+            elif ft == 0x16:
+                self._last_peer_activity = time.time()
+            elif ft == 0x20:
+                logger.warning("Received ERROR frame: %s", frame.get("error_message"))
 
 
 
@@ -520,12 +660,15 @@ class ATPAgent:
         if self._keepalive_task:
             self._keepalive_task.cancel()
             self._keepalive_task = None
+        if self._frame_reader_task:
+            self._frame_reader_task.cancel()
+            self._frame_reader_task = None
         if self._writer:
             try:
                 self._writer.close()
                 await self._writer.wait_closed()
             except Exception:
-                pass
+                pass  # nosec — cleanup on close, connection may already be gone
         if self.monitor:
             self.monitor.add_event(CONNECTION_CLOSE, {
                 "conn_id": self._conn_id,
@@ -538,7 +681,7 @@ class ATPAgent:
             try:
                 self._writer.close()
             except Exception:
-                pass
+                pass  # nosec — sync cleanup, best-effort
         if self.monitor:
             self.monitor.add_event(CONNECTION_CLOSE, {
                 "conn_id": self._conn_id,
@@ -621,6 +764,33 @@ class ATPAgent:
     #  Internal: handshake phases
     # ══════════════════════════════════════════════════════════════════════
 
+    @staticmethod
+    def _get_tls_peer_pk(writer) -> Optional[bytes]:
+        """Extract the TLS peer certificate's raw public key bytes.
+
+        Returns the public key bytes from the peer's TLS certificate, or None
+        if the peer certificate is not available (e.g. no TLS, anonymous).
+        Used for step 7 of MCC verification (agent_pk match).
+        """
+        try:
+            ssl_obj = writer.get_extra_info("ssl_object")
+            if ssl_obj is None:
+                return None
+            cert_der = ssl_obj.getpeercert(binary_form=True)
+            if cert_der is None:
+                return None
+            from cryptography import x509
+            from cryptography.hazmat.primitives import serialization
+            cert = x509.load_der_x509_certificate(cert_der)
+            pub_key = cert.public_key()
+            return pub_key.public_bytes(
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PublicFormat.Raw,
+            )
+        except Exception:
+            logger.debug("Could not extract TLS peer public key", exc_info=True)
+            return None
+
     async def _server_handshake(self, reader, writer):
         """Responder-side handshake."""
         # Phase 1 — TLS already done by caller
@@ -633,7 +803,7 @@ class ATPAgent:
         ack_header = build_header(0x31)
         ack = {
             "header": ack_header,
-            "atp_version": ATP_VERSION,
+            "selected_version": ATP_VERSION,
             "max_batch_bytes": MAX_BATCH_BYTES,
             "clock_skew_ms": CLOCK_SKEW_MS,
             "anti_replay_ttl_ms": ANTI_REPLAY_TTL_MS,
@@ -653,42 +823,38 @@ class ATPAgent:
             raise ConnectionError("MCC_BIND_REQUEST missing mcc_cbor")
         self.peer_mcc = MCC.from_cbor(peer_mcc_raw)
 
-        # Verify peer's MCC
-        if not self.demo_mode:
-            # Full ATP-Full: lookup authority in RootStore, verify signature, check revocation
-            from revocation import get_root_store, get_degradation
-            rs = get_root_store()
-            dp = get_degradation()
-            auth_pk = rs.get_authority(self.peer_mcc.authority_id)
+        # Verify peer's MCC — sempre obbligatorio (demo_mode rimosso)
+        # Full ATP-Full: lookup authority in RootStore, verify signature, check revocation
+        from revocation import get_root_store, get_degradation
+        from authority import get_default_authority
+        rs = get_root_store()
+        dp = get_degradation()
+        auth_pk = rs.get_authority(self.peer_mcc.authority_id)
 
-            if auth_pk is None:
-                deg_state = dp.evaluate(self.peer_mcc.authority_id, rs)
-                if self.monitor:
-                    self.monitor.add_event("DEGRADATION_STATE", {
-                        "conn_id": self._conn_id, "state": deg_state,
-                    })
-                if deg_state == "UNCERTAIN":
-                    raise ConnectionError("Authority UNCERTAIN — connection refused")
-                authority = get_default_authority()
-                auth_pk = authority.public_key
-
-            if not self.peer_mcc.verify(auth_pk, check_revoked=True):
-                if self.monitor:
-                    self.monitor.add_event(MCC_VERIFICATION_FAILED, {
-                        "conn_id": self._conn_id,
-                    })
-                raise ConnectionError("Peer MCC verification failed")
+        if auth_pk is None:
+            deg_state = dp.evaluate(self.peer_mcc.authority_id, rs)
             if self.monitor:
-                self.monitor.add_event(MCC_VERIFICATION_SUCCESS, {
+                self.monitor.add_event("DEGRADATION_STATE", {
+                    "conn_id": self._conn_id, "state": deg_state,
+                })
+            if deg_state == "UNCERTAIN":
+                raise ConnectionError("Authority UNCERTAIN — connection refused")
+            authority = get_default_authority()
+            auth_pk = authority.public_key
+
+        # Extract TLS peer public key for step 7 verification (optional)
+        # Not used — key separation means TLS key (Ed25519) ≠ agent_pk (X25519)
+        # Binding is established via proof-of-possession signatures instead.
+        if not self.peer_mcc.verify(auth_pk, check_revoked=True):
+            if self.monitor:
+                self.monitor.add_event(MCC_VERIFICATION_FAILED, {
                     "conn_id": self._conn_id,
                 })
-        else:
-            # Demo mode: trust-on-first-use, skip authority signature verification
-            if self.monitor:
-                self.monitor.add_event(MCC_VERIFICATION_SUCCESS, {
-                    "conn_id": self._conn_id,
-                    "demo_mode": True,
-                })
+            raise ConnectionError("Peer MCC verification failed")
+        if self.monitor:
+            self.monitor.add_event(MCC_VERIFICATION_SUCCESS, {
+                "conn_id": self._conn_id,
+            })
 
         # Check if peer wants key separation (dual_use check)
         peer_leaves = {l.key: l.value for l in self.peer_mcc.leaves}
@@ -781,37 +947,33 @@ class ATPAgent:
 
         self.peer_mcc = MCC.from_cbor(bind_resp["mcc_cbor"])
 
-        # Verify peer's MCC
-        if not self.demo_mode:
-            # Full ATP-Full: lookup authority in RootStore, verify signature, check revocation
-            from revocation import get_root_store, get_degradation
-            rs = get_root_store()
-            dp = get_degradation()
-            auth_pk = rs.get_authority(self.peer_mcc.authority_id)
-            if auth_pk is None:
-                deg_state = dp.evaluate(self.peer_mcc.authority_id, rs)
-                if deg_state == "UNCERTAIN":
-                    raise ConnectionError("Authority UNCERTAIN — connection refused")
-                authority = get_default_authority()
-                auth_pk = authority.public_key
+        # Verify peer's MCC — sempre obbligatorio (demo_mode rimosso)
+        # Full ATP-Full: lookup authority in RootStore, verify signature, check revocation
+        from revocation import get_root_store, get_degradation
+        from authority import get_default_authority
+        rs = get_root_store()
+        dp = get_degradation()
+        auth_pk = rs.get_authority(self.peer_mcc.authority_id)
+        if auth_pk is None:
+            deg_state = dp.evaluate(self.peer_mcc.authority_id, rs)
+            if deg_state == "UNCERTAIN":
+                raise ConnectionError("Authority UNCERTAIN — connection refused")
+            authority = get_default_authority()
+            auth_pk = authority.public_key
 
-            if not self.peer_mcc.verify(auth_pk, check_revoked=True):
-                if self.monitor:
-                    self.monitor.add_event(MCC_VERIFICATION_FAILED, {
-                        "conn_id": self._conn_id,
-                    })
-                raise ConnectionError("Peer MCC verification failed")
+        # Extract TLS peer public key for step 7 verification (optional)
+        # Not used — key separation means TLS key (Ed25519) ≠ agent_pk (X25519)
+        # Binding is established via proof-of-possession signatures instead.
+        if not self.peer_mcc.verify(auth_pk, check_revoked=True):
             if self.monitor:
-                self.monitor.add_event(MCC_VERIFICATION_SUCCESS, {
+                self.monitor.add_event(MCC_VERIFICATION_FAILED, {
                     "conn_id": self._conn_id,
                 })
-        else:
-            # Demo mode: trust-on-first-use, skip authority signature verification
-            if self.monitor:
-                self.monitor.add_event(MCC_VERIFICATION_SUCCESS, {
-                    "conn_id": self._conn_id,
-                    "demo_mode": True,
-                })
+            raise ConnectionError("Peer MCC verification failed")
+        if self.monitor:
+            self.monitor.add_event(MCC_VERIFICATION_SUCCESS, {
+                "conn_id": self._conn_id,
+            })
 
         peer_leaves = {l.key: l.value for l in self.peer_mcc.leaves}
         peer_nonce = bind_resp.get("nonce", b"")
@@ -865,6 +1027,26 @@ class ATPAgent:
         task_type = frame.get("task_type", "unknown")
         task_payload = frame.get("task_payload", b"")
 
+        # Extract task_id from request (used in all response frames)
+        task_id_from_req = header.get("task_id", header.get("frame_id", b"\x00"*16))
+
+        # Rate limiter check
+        if self.rate_limiter and not await self.rate_limiter.allow():
+            logger.warning("Rate limit exceeded for %s", self._conn_id)
+            err_header = build_header(0x04, task_id_from_req)
+            error_frame = {
+                "header": err_header,
+                "error_code": 0x0D,  # ERR_RATE_LIMITED
+                "error_message": "Rate limit exceeded",
+                "retry_after_ms": 1000,
+            }
+            await self._send_frame(error_frame)
+            if self.monitor:
+                self.monitor.add_event(RATE_LIMIT_HIT, {
+                    "conn_id": self._conn_id,
+                })
+            return
+
         if self.monitor:
             self.monitor.add_event(TASK_START, {
                 "conn_id": self._conn_id,
@@ -873,80 +1055,108 @@ class ATPAgent:
             })
 
         # Send TASK_ACK immediately
-        ack_header = build_header(0x03, header.get("frame_id"))
+        ack_header = build_header(0x03, task_id_from_req)
         ack = {"header": ack_header}
         await self._send_frame(ack)
 
-        # Process the task
-        try:
-            result_bytes = task_payload  # default echo
-            if self.task_handler:
-                result = await self.task_handler(frame)
-                if isinstance(result, dict):
+        # Process the task (track as _current_task for cancellation)
+        async def _process():
+            try:
+                result_bytes = task_payload  # default echo
+                if self.task_handler:
+                    result = await self.task_handler(frame)
+                    if isinstance(result, dict):
+                        result_bytes = json.dumps(result).encode("utf-8")
+                    elif isinstance(result, bytes):
+                        result_bytes = result
+                    else:
+                        result_bytes = str(result).encode("utf-8")
+                elif task_type == "deepseek_chat":
+                    prompt = task_payload.decode("utf-8", errors="replace")
+                    result_text = await self.call_deepseek(prompt, self.monitor, self._conn_id)
+                    result = {"result": result_text or "no response"} if result_text else {"error": "DeepSeek returned no result"}
                     result_bytes = json.dumps(result).encode("utf-8")
-                elif isinstance(result, bytes):
-                    result_bytes = result
-                else:
-                    result_bytes = str(result).encode("utf-8")
-            elif task_type == "deepseek_chat":
-                prompt = task_payload.decode("utf-8", errors="replace")
-                result_text = await self.call_deepseek(prompt, self.monitor, self._conn_id)
-                result = {"result": result_text or "no response"} if result_text else {"error": "DeepSeek returned no result"}
-                result_bytes = json.dumps(result).encode("utf-8")
 
-            resp_header = build_header(0x02, header.get("frame_id"))
-            response = {
-                "header": resp_header,
-                "status": 0,
-                "result_payload": result_bytes,
-            }
-            await self._send_frame(response)
+                resp_header = build_header(0x02, task_id_from_req)
+                response = {
+                    "header": resp_header,
+                    "status": 0,
+                    "result_payload": result_bytes,
+                }
+                await self._send_frame(response)
 
-            if self.monitor:
-                self.monitor.add_event(TASK_COMPLETE, {
-                    "conn_id": self._conn_id,
-                    "task_type": task_type,
-                })
-                self.monitor.add_task({
-                    "task_id": (header.get("frame_id") or b"\x00"*16).hex()[:8],
-                    "task_type": task_type,
-                    "request": task_payload.decode("utf-8", errors="replace")[:80],
-                    "response": result_bytes.decode("utf-8", errors="replace")[:200],
-                    "status": "completed",
-                    "error_code": None,
-                    "latency_ms": 0,
-                    "agent": self.identity.agent_name,
-                    "direction": "received",
-                    "timestamp": time.time(),
-                })
+                if self.monitor:
+                    self.monitor.add_event(TASK_COMPLETE, {
+                        "conn_id": self._conn_id,
+                        "task_type": task_type,
+                    })
+                    self.monitor.add_task({
+                        "task_id": (header.get("frame_id") or b"\x00"*16).hex()[:8],
+                        "task_type": task_type,
+                        "request": task_payload.decode("utf-8", errors="replace")[:80],
+                        "response": result_bytes.decode("utf-8", errors="replace")[:200],
+                        "status": "completed",
+                        "error_code": None,
+                        "latency_ms": 0,
+                        "agent": self.identity.agent_name,
+                        "direction": "received",
+                        "timestamp": time.time(),
+                    })
 
-        except Exception as exc:
-            logger.exception("Task processing error")
-            err_header = build_header(0x04, header.get("frame_id"))
-            error_frame = {
-                "header": err_header,
-                "error_code": 0x0B,
-                "error_message": str(exc),
-            }
-            await self._send_frame(error_frame)
-            if self.monitor:
-                self.monitor.add_event(TASK_ERROR, {
-                    "conn_id": self._conn_id,
+            except asyncio.CancelledError:
+                logger.info("Task cancelled via TASK_CANCEL")
+                err_header = build_header(0x04, task_id_from_req)
+                error_frame = {
+                    "header": err_header,
+                    "error_code": 0x0F,  # ERR_TASK_CANCELLED
+                    "error_message": "Task cancelled by peer",
+                }
+                try:
+                    await self._send_frame(error_frame)
+                except Exception:
+                    pass
+                if self.monitor:
+                    self.monitor.add_event(TASK_ERROR, {
+                        "conn_id": self._conn_id,
+                        "error_code": 0x0F,
+                        "error_message": "Task cancelled by peer",
+                    })
+
+            except Exception as exc:
+                logger.exception("Task processing error")
+                err_header = build_header(0x04, task_id_from_req)
+                error_frame = {
+                    "header": err_header,
                     "error_code": 0x0B,
                     "error_message": str(exc),
-                })
-                self.monitor.add_task({
-                    "task_id": (header.get("frame_id") or b"\x00"*16).hex()[:8],
-                    "task_type": task_type,
-                    "request": task_payload.decode("utf-8", errors="replace")[:80],
-                    "response": str(exc)[:200],
-                    "status": "error",
-                    "error_code": 0x0B,
-                    "latency_ms": 0,
-                    "agent": self.identity.agent_name,
-                    "direction": "received",
-                    "timestamp": time.time(),
-                })
+                }
+                await self._send_frame(error_frame)
+                if self.monitor:
+                    self.monitor.add_event(TASK_ERROR, {
+                        "conn_id": self._conn_id,
+                        "error_code": 0x0B,
+                        "error_message": str(exc),
+                    })
+                    self.monitor.add_task({
+                        "task_id": (header.get("frame_id") or b"\x00"*16).hex()[:8],
+                        "task_type": task_type,
+                        "request": task_payload.decode("utf-8", errors="replace")[:80],
+                        "response": str(exc)[:200],
+                        "status": "error",
+                        "error_code": 0x0B,
+                        "latency_ms": 0,
+                        "agent": self.identity.agent_name,
+                        "direction": "received",
+                        "timestamp": time.time(),
+                    })
+
+        self._current_task = asyncio.create_task(_process())
+        try:
+            await self._current_task
+        except asyncio.CancelledError:
+            pass  # already handled inside _process()
+        finally:
+            self._current_task = None
 
     # ══════════════════════════════════════════════════════════════════════
     #  I/O helpers
@@ -964,7 +1174,7 @@ class ATPAgent:
         await send_frame(self._writer, payload)
 
     async def _read_frame(self) -> Optional[dict]:
-        """Read a frame and log the event. Applies clock skew check."""
+        """Read a frame and log the event. Applies anti-replay and clock skew checks."""
         try:
             frame = await decode_frame(self._reader)
         except Exception:
@@ -973,17 +1183,40 @@ class ATPAgent:
         if frame is None:
             return None
 
-        # Clock skew check (server side only)
         header = frame.get("header", {})
+        ft = header.get("frame_type")
         ts = header.get("timestamp", 0)
-        if ts and self.is_server:
+        frame_id = header.get("frame_id", b"")
+
+        # Anti-replay check (server side, control and task frames only)
+        if self.anti_replay and self.is_server and frame_id and ft not in (0x30, 0x31, 0x40, 0x41, 0x42, 0x50):
+            now_ms = int(time.time() * 1000)
+            if not await self.anti_replay.is_new(frame_id, now_ms):
+                logger.warning("Anti-replay: duplicate frame_id %s", frame_id.hex()[:8])
+                return None
+
+        # Clock skew check (server side only)
+        if ts and self.is_server and ft:
             from config import CLOCK_SKEW_MS
             now_ms = int(time.time() * 1000)
             if abs(now_ms - ts) > CLOCK_SKEW_MS:
                 logger.warning("Clock skew: %d ms (limit %d)", abs(now_ms - ts), CLOCK_SKEW_MS)
+                # Send TASK_ERROR with server_time_ms for clock correction
+                if ft == 0x01:  # only for task requests
+                    try:
+                        task_id_skew = header.get("task_id", b"\x00"*16)
+                        err_header = build_header(0x04, task_id_skew)
+                        error_frame = {
+                            "header": err_header,
+                            "error_code": 0x0C,  # ERR_CLOCK_SKEW
+                            "error_message": f"Clock skew {abs(now_ms - ts)}ms exceeds limit {CLOCK_SKEW_MS}ms",
+                            "server_time_ms": now_ms,
+                        }
+                        await self._send_frame(error_frame)
+                    except Exception:
+                        pass  # nosec — best-effort clock skew notification
                 return None
 
-        ft = header.get("frame_type")
         if self.monitor:
             self.monitor.add_event(FRAME_RECEIVED, {
                 "conn_id": self._conn_id,

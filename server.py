@@ -11,7 +11,7 @@ import logging
 from typing import Optional
 
 from config import SERVER_HOST, SERVER_PORT, CONNECTION_SETUP_TIMEOUT_MS
-from agent import ATPAgent, AgentIdentity, get_self_signed_cert
+from agent import ATPAgent, AgentIdentity, make_ssl_context
 from monitor import Monitor, ERROR_OCCURRED
 from atp_core import decode_frame, build_header, send_frame
 
@@ -32,23 +32,11 @@ class ATPServer:
         self.identity = AgentIdentity(agent_name="atp-server")
 
     async def start(self, host: str = SERVER_HOST, port: int = SERVER_PORT):
-        """Start the TCP/TLS server."""
+        """Start the TCP/TLS server and background gossip loop."""
         self._loop = asyncio.get_running_loop()
 
-        # Build SSL context with self-signed cert
-        cert_pem, key_pem = get_self_signed_cert()
-        ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE  # self-signed demo
-
-        # Write cert+key to persistent temp files (SSLContext needs file paths)
-        cert_path = os.path.join(os.path.dirname(__file__), "server_cert.pem")
-        key_path = os.path.join(os.path.dirname(__file__), "server_key.pem")
-        with open(cert_path, "wb") as cf:
-            cf.write(cert_pem)
-        with open(key_path, "wb") as kf:
-            kf.write(key_pem)
-        ssl_ctx.load_cert_chain(cert_path, key_path)
+        # Build SSL context with CA-signed cert (mutual TLS)
+        ssl_ctx = make_ssl_context(server_side=True, cn=f"atp-server-{host}:{port}")
 
         self._server = await asyncio.start_server(
             self._on_connect,
@@ -59,7 +47,13 @@ class ATPServer:
         )
         self._running = True
         addr = self._server.sockets[0].getsockname()
-        logger.info("ATP Server listening on %s:%s", addr[0], addr[1])
+        logger.info("ATP Server listening on %s:%s (TLS mutual)", addr[0], addr[1])
+
+        # Start background gossip loop
+        from revocation import get_gossip
+        gossip = get_gossip(node_id=f"server-{host}:{port}")
+        self._gossip_task = asyncio.create_task(gossip.gossip_loop(interval_s=5))
+        logger.info("Gossip protocol started (interval=5s, fanout=3)")
 
         # Keep running until cancelled
         try:
@@ -69,6 +63,8 @@ class ATPServer:
             logger.info("ATP server serve_forever cancelled")
         finally:
             self._running = False
+            if self._gossip_task:
+                self._gossip_task.cancel()
 
     async def stop(self):
         """Gracefully stop the server."""
@@ -90,6 +86,8 @@ class ATPServer:
             is_server=True,
             monitor=self.monitor,
             task_handler=self._default_task_handler,
+            rate_limiter=rate_limiter,
+            anti_replay=anti_replay,
         )
         try:
             ok = await agent.perform_handshake(reader, writer)
@@ -107,7 +105,7 @@ class ATPServer:
             try:
                 writer.close()
             except Exception:
-                pass
+                pass  # nosec — cleanup, connection already closing
 
     async def _default_task_handler(self, frame: dict) -> dict:
         """Default handler: echo payload or call DeepSeek."""
